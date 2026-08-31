@@ -64,7 +64,7 @@ def login(session):
         fields[submit["name"]] = submit.get("value", submit.get_text(" ", strip=True))
     result = session.post(response.url, data=fields, timeout=30, allow_redirects=True)
     result.raise_for_status()
-    if "login.aspx" in result.url.lower() or re.search(r"type=["']password", result.text, re.I):
+    if "login.aspx" in result.url.lower() or 'type="password"' in result.text.lower():
         raise RuntimeError("EduSecure login failed; check the GitHub Secrets")
 
 
