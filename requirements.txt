@@ -1,1 +1,2 @@
-requests\nbeautifulsoup4\n
+requests
+beautifulsoup4
