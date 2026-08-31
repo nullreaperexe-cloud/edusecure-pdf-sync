@@ -85,7 +85,7 @@ OLD_OUTPUT_FILES = [
     "uploaded_circular_pdfs.json",
 ]
 
-MAX_UPLOADS = 5000
+MAX_UPLOADS = int(os.environ.get("MAX_UPLOADS", "25"))
 MAX_NO_NEW_SCROLLS = 999
 
 # Today-only mode:
