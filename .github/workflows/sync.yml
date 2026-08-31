@@ -6,10 +6,9 @@ on:
     branches:
       - main
     paths:
+      - "runner.py"
+      - "runner_v2.py"
       - "sync.py"
-      - "sync_repair.py"
-      - "sync_repair_v2.py"
-      - "sync_repair_v3.py"
       - "requirements.txt"
       - ".github/workflows/sync.yml"
   schedule:
@@ -35,14 +34,13 @@ jobs:
       - name: Install dependencies
         run: python -m pip install -r requirements.txt
 
-      - name: Sync EduSecure PDFs to 8aPDF ingest endpoint
+      - name: Click EduSecure attachment icons and sync PDFs
         env:
           PYTHONUNBUFFERED: "1"
           EDUSECURE_USERNAME: ${{ secrets.EDUSECURE_USERNAME }}
           EDUSECURE_PASSWORD: ${{ secrets.EDUSECURE_PASSWORD }}
-          AUTOMATION_TOKEN: ${{ secrets.AUTOMATION_TOKEN }}
-          INGEST_URL: https://eightapdf-study-library.nullreaper-exe.chatgpt.site/automation/ingest
-        run: python sync_repair_v3.py
+          FIREBASE_ADMIN_PASSWORD: ${{ secrets.FIREBASE_ADMIN_PASSWORD }}
+        run: python runner_v2.py
 
       - name: Upload sync diagnostics
         if: always()
@@ -52,6 +50,5 @@ jobs:
           path: |
             sync_report.json
             debug_*.png
-            /tmp/edusecure-downloads/*
           if-no-files-found: ignore
           retention-days: 7
