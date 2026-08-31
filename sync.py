@@ -789,6 +789,7 @@ def get_pdf_url_from_attachment(driver: webdriver.Chrome, target: Dict[str, str]
         return direct_pdf
 
     before_tabs = set(driver.window_handles)
+    before_url = driver.current_url
 
     if not click_path(driver, target.get("path", "")):
         print("â Attachment click failed.")
@@ -808,6 +809,10 @@ def get_pdf_url_from_attachment(driver: webdriver.Chrome, target: Dict[str, str]
                 pdf_url = extract_pdf_from_current_page(driver)
             driver.close()
             driver.switch_to.window(app_handle)
+            # Some EduSecure attachments use DownloadFile.aspx?id=... without a
+            # .pdf suffix.  It is still the real downloadable attachment URL.
+            if not is_pdf_url(pdf_url) and pdf_url and pdf_url != before_url and pdf_url.lower().startswith(("http://", "https://")):
+                return pdf_url
             return pdf_url if is_pdf_url(pdf_url) else None
         except WebDriverException:
             try:
@@ -825,6 +830,9 @@ def get_pdf_url_from_attachment(driver: webdriver.Chrome, target: Dict[str, str]
         except Exception:
             pass
         return pdf_url
+
+    if driver.current_url != before_url and driver.current_url.lower().startswith(("http://", "https://")):
+        return driver.current_url
 
     pdf_inside = extract_pdf_from_current_page(driver)
     if is_pdf_url(pdf_inside):
