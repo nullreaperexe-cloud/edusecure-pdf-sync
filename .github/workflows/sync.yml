@@ -9,6 +9,7 @@ on:
       - "runner.py"
       - "runner_v2.py"
       - "runner_v3.py"
+      - "runner_v4.py"
       - "sync.py"
       - "sync_repair.py"
       - "requirements.txt"
@@ -36,13 +37,13 @@ jobs:
       - name: Install dependencies
         run: python -m pip install -r requirements.txt
 
-      - name: Click message attachment icon and verify real PDF
+      - name: Click exact EduSecure attachment icon and verify PDF
         env:
           PYTHONUNBUFFERED: "1"
           EDUSECURE_USERNAME: ${{ secrets.EDUSECURE_USERNAME }}
           EDUSECURE_PASSWORD: ${{ secrets.EDUSECURE_PASSWORD }}
           FIREBASE_ADMIN_PASSWORD: ${{ secrets.FIREBASE_ADMIN_PASSWORD }}
-        run: python runner_v3.py
+        run: python runner_v4.py
 
       - name: Upload sync diagnostics
         if: always()
