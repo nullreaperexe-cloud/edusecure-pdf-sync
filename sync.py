@@ -145,7 +145,7 @@ def discover_detail_links(html, page_url):
     links = set()
     for anchor in soup.select("a[href]"):
         href = anchor.get("href", "")
-        if re.search(r"Announcement\\.aspx\\?[^\\s"']*Id=\\d+", href, re.I):
+        if re.search(r'''Announcement\.aspx\?[^\s"']*Id=\d+''', href, re.I):
             links.add(urljoin(page_url, href))
     return links
 
