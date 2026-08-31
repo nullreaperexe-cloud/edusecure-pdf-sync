@@ -1,0 +1,25 @@
+# Local secrets / environment files
+.env
+.env.*
+!.env.example
+
+# Python cache
+__pycache__/
+*.py[cod]
+
+# Automation runtime artifacts
+sync_report.json
+debug_*.png
+edusecure_uploaded_pdf_state*.json
+uploaded_*.json
+
+# Local downloads / temporary files
+downloads/
+*.tmp
+*.log
+
+# OS/editor files
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
