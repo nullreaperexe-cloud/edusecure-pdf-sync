@@ -2,6 +2,9 @@ name: EduSecure PDF Sync
 
 on:
   workflow_dispatch:
+  push:
+    branches:
+      - main
   schedule:
     - cron: "17 * * * *"
 
@@ -24,8 +27,9 @@ jobs:
 
       - name: Sync EduSecure PDFs
         env:
+          PYTHONUNBUFFERED: "1"
           EDUSECURE_USERNAME: ${{ secrets.EDUSECURE_USERNAME }}
           EDUSECURE_PASSWORD: ${{ secrets.EDUSECURE_PASSWORD }}
           AUTOMATION_TOKEN: ${{ secrets.AUTOMATION_TOKEN }}
           INGEST_URL: https://eightapdf-study-library.nullreaper-exe.chatgpt.site/automation/ingest
-        run: python sync.py
+        run: python sync_repair.py
