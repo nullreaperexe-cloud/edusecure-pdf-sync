@@ -16,7 +16,8 @@ on:
       - "requirements.txt"
       - ".github/workflows/sync.yml"
   schedule:
-    - cron: "17 * * * *"
+    # 00:00 Asia/Kolkata = 18:30 UTC on the previous calendar day.
+    - cron: "30 18 * * *"
 
 permissions:
   contents: read
