@@ -140,6 +140,30 @@ def extract_items(html, page_url):
     return found
 
 
+def discover_detail_links(html, page_url):
+    soup = BeautifulSoup(html, "html.parser")
+    links = set()
+    for anchor in soup.select("a[href]"):
+        href = anchor.get("href", "")
+        if re.search(r"Announcement\\.aspx\\?[^\\s"']*Id=\\d+", href, re.I):
+            links.add(urljoin(page_url, href))
+    return links
+
+
+def scan_page(session, page, items):
+    response = session.get(page, timeout=30)
+    response.raise_for_status()
+    items.update(extract_items(response.text, response.url))
+    # EduSecure exposes attachments only after opening each announcement detail page.
+    for detail_url in list(discover_detail_links(response.text, response.url))[:75]:
+        try:
+            detail = session.get(detail_url, timeout=30)
+            detail.raise_for_status()
+            items.update(extract_items(detail.text, detail.url))
+        except requests.RequestException as exc:
+            print(f"Warning: could not scan detail {detail_url}: {exc}", file=sys.stderr)
+
+
 def main():
     session = requests.Session()
     session.headers.update({"User-Agent": "8aPDF-EduSecure-Sync/1.1"})
@@ -147,9 +171,7 @@ def main():
     items = {}
     for page in PAGES:
         try:
-            response = session.get(page, timeout=30)
-            response.raise_for_status()
-            items.update(extract_items(response.text, response.url))
+            scan_page(session, page, items)
         except requests.RequestException as exc:
             print(f"Warning: could not scan {page}: {exc}", file=sys.stderr)
 
