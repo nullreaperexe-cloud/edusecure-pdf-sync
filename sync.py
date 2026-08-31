@@ -55,7 +55,7 @@ from selenium.webdriver.support.ui import WebDriverWait
 
 
 START_URL = "https://edusecure.org/ManavMangal88/ParentApp/Dashboard.aspx"
-PUBLIC_PDF_SITE = "https://8apdf.xo.je/"
+PUBLIC_PDF_SITE = "https://eightapdf-study-library.nullreaper-exe.chatgpt.site/"
 ADMIN_URL = "file:///C:/Users/Kanish/Downloads/admin.html"
 
 # Auto-login credentials. Keep this file private.
@@ -319,7 +319,7 @@ def auto_login_edusecure(driver: webdriver.Chrome) -> bool:
         if "login" not in driver.current_url.lower():
             text = clean_text(driver.find_element(By.TAG_NAME, "body").text)
             if "Circular" in text or "School Diary" in text or "Dashboard" in text:
-                print("EduSecure already logged in ✅")
+                print("EduSecure already logged in â")
                 return True
     except Exception:
         pass
@@ -386,7 +386,7 @@ def auto_login_edusecure(driver: webdriver.Chrome) -> bool:
     try:
         text = clean_text(driver.find_element(By.TAG_NAME, "body").text)
         if "login" not in driver.current_url.lower() and ("Circular" in text or "School Diary" in text or "Dashboard" in text or "Learning Planner" in text):
-            print("EduSecure auto-login done ✅")
+            print("EduSecure auto-login done â")
             return True
     except Exception:
         pass
@@ -408,7 +408,7 @@ def auto_login_admin(driver: webdriver.Chrome) -> bool:
     time.sleep(0.8)
 
     if admin_form_available(driver, quick_timeout=3):
-        print("Admin already logged in / Add PDF form visible ✅")
+        print("Admin already logged in / Add PDF form visible â")
         return True
 
     print("Trying admin auto-login...")
@@ -482,7 +482,7 @@ def auto_login_admin(driver: webdriver.Chrome) -> bool:
     wait_ready(driver)
 
     if admin_form_available(driver, quick_timeout=10):
-        print("Admin auto-login done ✅")
+        print("Admin auto-login done â")
         return True
 
     print("Admin auto-login may have failed.")
@@ -555,7 +555,7 @@ def click_app_back_arrow(driver: webdriver.Chrome) -> bool:
           (r.top < 120 ? 20 : 0) +
           (r.left < 220 ? 20 : 0) +
           (/back|arrow|chevron|left|return/i.test(txt + " " + cls) ? 45 : 0) +
-          (txt === "←" || txt === "‹" || txt === "❮" ? 60 : 0) +
+          (txt === "â" || txt === "â¹" || txt === "â®" ? 60 : 0) +
           (r.width >= 15 && r.width <= 110 && r.height >= 15 && r.height <= 110 ? 15 : 0);
         return {el, r, txt, score};
       })
@@ -791,7 +791,7 @@ def get_pdf_url_from_attachment(driver: webdriver.Chrome, target: Dict[str, str]
     before_tabs = set(driver.window_handles)
 
     if not click_path(driver, target.get("path", "")):
-        print("❌ Attachment click failed.")
+        print("â Attachment click failed.")
         return None
 
     time.sleep(0.7)
@@ -1189,7 +1189,7 @@ def set_field_value(driver: webdriver.Chrome, element: WebElement, value: str, f
         actual = element.get_attribute("value") or ""
         return actual.strip() == str(value).strip()
     except Exception:
-        print(f"❌ Could not fill field: {field_name}")
+        print(f"â Could not fill field: {field_name}")
         return False
 
 
@@ -1230,7 +1230,7 @@ def open_admin_tab_direct(driver: webdriver.Chrome, app_handle: str) -> str:
     missing = [k for k in ["title", "subject", "description", "link", "button"] if not form.get(k)]
 
     if missing:
-        print(f"❌ Admin form still missing after wait: {missing}")
+        print(f"â Admin form still missing after wait: {missing}")
         print(f"Current admin URL: {form.get('url') or driver.current_url}")
         print("Page text preview:")
         print((form.get("bodyText") or "")[:500])
@@ -1239,7 +1239,7 @@ def open_admin_tab_direct(driver: webdriver.Chrome, app_handle: str) -> str:
         save_debug_screenshot(driver, "debug_admin_missing_fields.png")
         print("debug_admin_missing_fields.png saved. Is screenshot ko bhej dena.")
     else:
-        print("✅ Admin form detected.")
+        print("â Admin form detected.")
 
     driver.switch_to.window(app_handle)
     return admin_handle
@@ -1254,7 +1254,7 @@ def upload_one_pdf_to_admin(driver: webdriver.Chrome, admin_handle: str, item: D
     missing = [k for k in ["title", "subject", "description", "link", "button"] if not form.get(k)]
 
     if missing:
-        print(f"❌ Admin form fields missing: {missing}")
+        print(f"â Admin form fields missing: {missing}")
         print(f"Current admin URL: {form.get('url') or driver.current_url}")
         print("Page text preview:")
         print((form.get("bodyText") or "")[:500])
@@ -1287,17 +1287,17 @@ def upload_one_pdf_to_admin(driver: webdriver.Chrome, admin_handle: str, item: D
     ok = set_field_value(driver, form["link"], link_value, "PDF Link") and ok
 
     if not ok:
-        print("❌ Admin fields fill failed.")
+        print("â Admin fields fill failed.")
         save_debug_screenshot(driver, "debug_admin_fill_failed.png")
         return False
 
     if not click_admin_add(driver, form["button"]):
-        print("❌ Admin Add button click failed.")
+        print("â Admin Add button click failed.")
         save_debug_screenshot(driver, "debug_admin_button_failed.png")
         return False
 
     time.sleep(WAIT_AFTER_ADMIN_ADD)
-    print("✅ Uploaded to admin")
+    print("â Uploaded to admin")
     return True
 
 
@@ -2466,6 +2466,41 @@ def analyze_entire_public_pdf_site(driver: webdriver.Chrome, max_pages: int = 12
     return all_pdfs
 
 
+def latest_library_date(driver: webdriver.Chrome) -> date:
+    """Read the newest date rendered by the public library before EduSecure scan.
+
+    The public app is client-rendered, so this deliberately uses the same browser
+    session rather than guessing a Firebase/API endpoint.  If the library is
+    empty or its cards have no readable date, retain the safe configured cutoff
+    instead of importing the school's entire history.
+    """
+    print("\n=== STEP 1: READING LATEST DATE FROM 8aPDF ===")
+    try:
+        driver.get(PUBLIC_PDF_SITE + "#home")
+        wait_ready(driver)
+        time.sleep(2.0)
+        dates: List[date] = []
+        for _ in range(45):
+            body = driver.find_element(By.TAG_NAME, "body").text or ""
+            for line in body.splitlines():
+                d = extract_message_date(line.strip())
+                if d:
+                    dates.append(d)
+            scroll = generic_scroll_down(driver)
+            if scroll.get("atBottom") and not scroll.get("moved"):
+                break
+        if dates:
+            newest = max(dates)
+            print(f"Latest existing library date: {newest.isoformat()}")
+            return newest
+    except Exception as exc:
+        print(f"Could not read library date: {str(exc)[:160]}")
+
+    fallback = parse_user_date(os.environ.get("SYNC_AFTER", "30-08-2026"))
+    print(f"No readable existing date; safe cutoff retained: {fallback.isoformat()}")
+    return fallback
+
+
 def get_dashboard_scroll_position(driver: webdriver.Chrome) -> float:
     js = r"""
     function visible(el) {
@@ -2784,10 +2819,10 @@ def enter_public_site_name_once_v28(driver: webdriver.Chrome) -> bool:
             pass
 
     if name_input is None:
-        print("❌ 'Write your name' input not found.")
+        print("â 'Write your name' input not found.")
         return False
 
-    print("✅ Name input found.")
+    print("â Name input found.")
     print("Typing: xyz")
 
     # Fill using real keyboard interaction first.
@@ -2838,7 +2873,7 @@ def enter_public_site_name_once_v28(driver: webdriver.Chrome) -> bool:
                 PUBLIC_SITE_NAME,
             )
         except Exception as exc:
-            print(f"❌ Could not type name: {exc}")
+            print(f"â Could not type name: {exc}")
             return False
 
     # Verify actual field value BEFORE Continue.
@@ -2876,10 +2911,10 @@ def enter_public_site_name_once_v28(driver: webdriver.Chrome) -> bool:
             pass
 
     if actual_value.lower() != PUBLIC_SITE_NAME.lower():
-        print(f"❌ Name field verification failed. Current value: {actual_value!r}")
+        print(f"â Name field verification failed. Current value: {actual_value!r}")
         return False
 
-    print("✅ xyz entered successfully.")
+    print("â xyz entered successfully.")
 
     # Find exact Continue button.
     continue_button = None
@@ -2908,10 +2943,10 @@ def enter_public_site_name_once_v28(driver: webdriver.Chrome) -> bool:
         time.sleep(0.2)
 
     if continue_button is None:
-        print("❌ Continue button not found.")
+        print("â Continue button not found.")
         return False
 
-    print("✅ Continue button found. Clicking...")
+    print("â Continue button found. Clicking...")
 
     clicked = False
 
@@ -2937,17 +2972,17 @@ def enter_public_site_name_once_v28(driver: webdriver.Chrome) -> bool:
                 pass
 
     if not clicked:
-        print("❌ Continue button click failed.")
+        print("â Continue button click failed.")
         return False
 
-    print("✅ Continue clicked.")
-    print("⏳ Waiting exactly 5 seconds. NO browser action during this wait...")
+    print("â Continue clicked.")
+    print("â³ Waiting exactly 5 seconds. NO browser action during this wait...")
 
     # IMPORTANT:
     # Nothing browser-related happens during these five seconds.
     time.sleep(5.0)
 
-    print("✅ 5 seconds completed. Website analysis can start now.")
+    print("â 5 seconds completed. Website analysis can start now.")
     return True
 
 
@@ -2969,7 +3004,7 @@ def analyze_entire_public_pdf_site_v28(driver: webdriver.Chrome, max_pages: int 
     time.sleep(0.8)
 
     if not enter_public_site_name_once_v28(driver):
-        print("⚠️ Could not auto-submit initial name. Continuing current page.")
+        print("â ï¸ Could not auto-submit initial name. Continuing current page.")
 
     root_url = driver.current_url or PUBLIC_PDF_SITE
     site_host = urlsplit(PUBLIC_PDF_SITE).netloc.lower()
@@ -3382,7 +3417,7 @@ def real_click_message_v25(driver: webdriver.Chrome, message: Dict[str, str]) ->
             pass
         time.sleep(0.25)
 
-    print("❌ Real click did not open this message.")
+    print("â Real click did not open this message.")
     return False
 
 
@@ -4717,14 +4752,7 @@ def main() -> None:
     if not EDUSECURE_USERNAME or not EDUSECURE_PASSWORD:
         raise RuntimeError("EDUSECURE_USERNAME and EDUSECURE_PASSWORD are required")
 
-    # Incremental safety boundary: only messages newer than the existing library's
-    # latest date are eligible. Override SYNC_AFTER deliberately when the library advances.
-    after_raw = os.environ.get("SYNC_AFTER", "30-08-2026")
     before_raw = os.environ.get("SYNC_BEFORE", "")
-    after_date = parse_user_date(after_raw)
-    before_date = parse_user_date(before_raw) if before_raw else date.today()
-    if before_date < after_date:
-        raise RuntimeError("SYNC_BEFORE cannot be earlier than SYNC_AFTER")
 
     driver = make_driver()
     processed_message_fps: Set[str] = set()
@@ -4735,6 +4763,11 @@ def main() -> None:
     older_date_confirmations = 0
 
     try:
+        # Always establish the boundary from the current 8aPDF library first.
+        after_date = latest_library_date(driver)
+        before_date = parse_user_date(before_raw) if before_raw else date.today()
+        if before_date < after_date:
+            raise RuntimeError("SYNC_BEFORE cannot be earlier than the library's latest date")
         print("Opening EduSecure Dashboard...")
         driver.get(START_URL)
         if not auto_login_edusecure(driver):
