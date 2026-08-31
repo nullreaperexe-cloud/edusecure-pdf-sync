@@ -10,6 +10,7 @@ on:
       - "sync_repair.py"
       - "sync_repair_v2.py"
       - "sync_repair_v3.py"
+      - "sync_repair_v4.py"
       - "requirements.txt"
       - ".github/workflows/sync.yml"
   schedule:
@@ -42,7 +43,7 @@ jobs:
           EDUSECURE_PASSWORD: ${{ secrets.EDUSECURE_PASSWORD }}
           AUTOMATION_TOKEN: ${{ secrets.AUTOMATION_TOKEN }}
           INGEST_URL: https://eightapdf-study-library.nullreaper-exe.chatgpt.site/automation/ingest
-        run: python sync_repair_v3.py
+        run: python sync_repair_v4.py
 
       - name: Upload sync diagnostics
         if: always()
