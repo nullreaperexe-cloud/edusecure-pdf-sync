@@ -16,7 +16,7 @@ import sync_repair as network
 
 
 BAD_URL_RE = re.compile(
-    r"(?:/ParentApp/morelinks\.aspx(?:\?|$)|/images/loader\.gif(?:\?|$)|dashboard\.aspx(?:\?|$))",
+    r"(?:/ParentApp/morelinks\.aspx(?:\?|$)|/images/loader\.gif(?:\?|$)|dashboard\.aspx(?:\?|$)|/login(?:\?|/|$))",
     re.I,
 )
 ORIGINAL_LIST = runner.list_firestore_materials
@@ -27,14 +27,17 @@ def clean(value: Any) -> str:
     return runner.clean(value)
 
 
-def strict_pdf_url(url: Optional[str]) -> bool:
-    """Only a normal HTTP(S) URL whose path literally ends in .pdf is accepted."""
+def valid_real_attachment_url(url: Optional[str]) -> bool:
+    """Accept any real HTTP(S) attachment URL regardless of file extension."""
     value = clean(url)
     if not re.match(r"^https?://", value, re.I):
         return False
     if BAD_URL_RE.search(value):
         return False
-    return value.lower().split("#", 1)[0].split("?", 1)[0].endswith(".pdf")
+    low = value.lower()
+    if low.startswith(("javascript:", "data:", "blob:")):
+        return False
+    return True
 
 
 def firestore_delete_document(document_name: str, id_token: str) -> bool:
@@ -50,7 +53,7 @@ def firestore_delete_document(document_name: str, id_token: str) -> bool:
 
 
 def list_and_cleanup_materials(id_token: str) -> List[Dict[str, Any]]:
-    """Remove only invalid records previously created by this EduSecure automation."""
+    """Remove only known-bad intermediate URLs created by this automation."""
     materials = ORIGINAL_LIST(id_token)
     kept: List[Dict[str, Any]] = []
     removed = 0
@@ -61,7 +64,7 @@ def list_and_cleanup_materials(id_token: str) -> List[Dict[str, Any]]:
         bad_automation_record = (
             "edusecure" in source
             and bool(url)
-            and (bool(BAD_URL_RE.search(url)) or not strict_pdf_url(url))
+            and bool(BAD_URL_RE.search(url))
         )
 
         if bad_automation_record:
@@ -77,7 +80,7 @@ def list_and_cleanup_materials(id_token: str) -> List[Dict[str, Any]]:
 
 
 class _StrictBoundaryDate(date):
-    """Runner compares dates against this internal date but logs the website date."""
+    """Runner compares dates against internal date but logs website latest date."""
 
     def __new__(cls, internal_date: date, displayed_date: date):
         obj = date.__new__(cls, internal_date.year, internal_date.month, internal_date.day)
@@ -89,21 +92,17 @@ class _StrictBoundaryDate(date):
 
 
 def strict_existing_state(materials: List[Dict[str, Any]]):
-    """Only process EduSecure messages strictly AFTER the website's latest real PDF date."""
-    _, _, next_order = ORIGINAL_EXISTING_STATE(materials)
-    real_pdf_materials = [
-        item for item in materials if strict_pdf_url(clean(item.get("pdf_url")))
-    ]
-    urls, actual_latest, _ = ORIGINAL_EXISTING_STATE(real_pdf_materials)
+    """Process only EduSecure messages strictly AFTER website latest material date."""
+    _, actual_latest, next_order = ORIGINAL_EXISTING_STATE(materials)
+    urls, _, _ = ORIGINAL_EXISTING_STATE(materials)
 
     if actual_latest:
-        print(f"Website latest real PDF date: {actual_latest.isoformat()}")
+        print(f"Website latest material date: {actual_latest.isoformat()}")
         print(
             "STRICT DATE MODE: only messages AFTER this date are eligible; "
             "same-date and older messages are skipped."
         )
-        # runner.py skips msg_date < cutoff.  Giving it latest+1 therefore also
-        # skips the website's latest date itself, exactly as requested.
+        # runner.py skips msg_date < cutoff. latest+1 therefore skips latest date too.
         effective_cutoff = _StrictBoundaryDate(
             actual_latest + timedelta(days=1), actual_latest
         )
@@ -113,12 +112,7 @@ def strict_existing_state(materials: List[Dict[str, Any]]):
 
 
 def exact_attachment_anchors(driver) -> List[Dict[str, str]]:
-    """Return ONLY the real visible <a> link for the message's Attachment button.
-
-    EduSecure's real control observed in logs is like:
-      ..._HyperLink1  text='Attachment'
-    Parent DIVs, wrappers, loaders and generic panels are deliberately ignored.
-    """
+    """Return ONLY the real visible <a> link for the message's Attachment button."""
     js = r"""
     function visible(el) {
       if (!el) return false;
@@ -225,22 +219,23 @@ def get_anchor_element(driver, anchor: Dict[str, str]):
     return None
 
 
-def strict_pdf_from_dom(driver) -> Optional[str]:
+def final_attachment_from_dom(driver) -> Optional[str]:
+    """Find a real file/document URL on the page, regardless of extension."""
     js = r"""
     function abs(u){try{return new URL(u,location.href).href}catch(e){return ''}}
-    for(const el of document.querySelectorAll('a[href],iframe[src],frame[src],embed[src],object[data]')){
-      for(const attr of ['href','src','data']){
+    const bad = /morelinks\.aspx|loader\.gif|dashboard\.aspx|\/login/i;
+    for(const el of document.querySelectorAll('a[href],iframe[src],frame[src],embed[src],object[data],[data-url],[data-href],[data-src]')){
+      for(const attr of ['href','src','data','data-url','data-href','data-src']){
         const raw=el.getAttribute&&el.getAttribute(attr); if(!raw) continue;
         const u=abs(raw);
-        const clean=u.split('#')[0].split('?')[0].toLowerCase();
-        if(/^https?:/i.test(u) && clean.endsWith('.pdf')) return u;
+        if(/^https?:/i.test(u) && !bad.test(u)) return u;
       }
     }
     return '';
     """
     try:
         value = clean(driver.execute_script(js))
-        return value if strict_pdf_url(value) else None
+        return value if valid_real_attachment_url(value) else None
     except Exception:
         return None
 
@@ -263,15 +258,7 @@ def close_extra_tabs(driver, app_handle: str) -> None:
 def right_click_open_link_in_new_tab(
     driver, app_handle: str, anchor: Dict[str, str]
 ) -> Optional[str]:
-    """Right-click the exact Attachment anchor, then open THAT link in a new tab.
-
-    Chrome's native context-menu UI is not exposed to WebDriver in headless
-    GitHub Actions.  We still perform the real right-click/contextmenu on the
-    exact <a>, then perform the browser-equivalent 'Open link in new tab' by
-    opening that exact anchor href in a Selenium-created tab.  Crucially, the
-    href is NEVER uploaded directly: the new tab/network must yield a final
-    URL ending in .pdf.
-    """
+    """Right-click exact Attachment anchor, open that exact link in a new tab, copy final URL."""
     element = get_anchor_element(driver, anchor)
     if element is None:
         print("Exact Attachment anchor element disappeared before right-click")
@@ -290,7 +277,6 @@ def right_click_open_link_in_new_tab(
         f"id={anchor.get('id')} text={anchor.get('text')!r}"
     )
 
-    # Real Selenium context click on the exact <a>.
     try:
         ActionChains(driver).move_to_element(element).context_click(element).perform()
         time.sleep(0.25)
@@ -299,8 +285,6 @@ def right_click_open_link_in_new_tab(
         except Exception:
             pass
     except Exception as exc:
-        # Dispatching a contextmenu event is the fallback if native context-click
-        # is unavailable in the current headless Chrome build.
         print(f"Native context click fallback: {str(exc)[:120]}")
         try:
             driver.execute_script(
@@ -314,22 +298,20 @@ def right_click_open_link_in_new_tab(
         except Exception:
             return None
 
-    # Read the href from the exact element only AFTER the right-click.
     try:
         href = clean(element.get_attribute("href"))
     except Exception:
         href = clean(anchor.get("href"))
 
-    if not re.match(r"^https?://", href, re.I) or BAD_URL_RE.search(href):
+    if not valid_real_attachment_url(href):
         print(f"Rejected Attachment href before opening new tab: {href}")
         return None
 
     print("Open link in new tab: exact Attachment href")
 
-    # Browser-equivalent of context-menu -> Open link in new tab.
     try:
         driver.switch_to.new_window("tab")
-        pdf_tab = driver.current_window_handle
+        attachment_tab = driver.current_window_handle
         try:
             network.drain_performance_log(driver)
         except Exception:
@@ -340,53 +322,63 @@ def right_click_open_link_in_new_tab(
         close_extra_tabs(driver, app_handle)
         return None
 
-    deadline = time.time() + 18.0
+    deadline = time.time() + 12.0
     observed: Set[str] = set()
+    first_real_seen_at: Optional[float] = None
+    last_real_url: Optional[str] = None
 
     while time.time() < deadline:
         try:
-            driver.switch_to.window(pdf_tab)
+            driver.switch_to.window(attachment_tab)
             current = clean(driver.current_url)
             if current and current not in observed:
                 observed.add(current)
                 print(f"New-tab URL observed: {current}")
 
-            if strict_pdf_url(current):
-                final_url = current
-                print(f"FINAL .pdf URL copied from new tab: {final_url}")
-                close_extra_tabs(driver, app_handle)
-                return final_url
+            if valid_real_attachment_url(current):
+                last_real_url = current
+                if first_real_seen_at is None:
+                    first_real_seen_at = time.time()
 
-            dom_pdf = strict_pdf_from_dom(driver)
-            if dom_pdf:
-                print(f"FINAL .pdf URL copied from new-tab viewer: {dom_pdf}")
-                close_extra_tabs(driver, app_handle)
-                return dom_pdf
+                # Give redirects a short moment to settle. Then copy exactly
+                # what is visible in the opened attachment tab.
+                if time.time() - first_real_seen_at >= 0.8:
+                    print(f"FINAL attachment URL copied from new tab: {last_real_url}")
+                    close_extra_tabs(driver, app_handle)
+                    return last_real_url
+
+            dom_url = final_attachment_from_dom(driver)
+            if dom_url and dom_url != current:
+                last_real_url = dom_url
+                if first_real_seen_at is None:
+                    first_real_seen_at = time.time()
         except WebDriverException:
             pass
 
-        # If Chrome downloads/redirects instead of displaying the PDF, capture
-        # only a post-open network URL that itself ends in .pdf.
         try:
             captured = network.attachment_url_from_performance(driver)
         except Exception:
             captured = None
-        if strict_pdf_url(captured):
-            final_url = clean(captured)
-            print(f"FINAL .pdf URL copied from post-open network: {final_url}")
-            close_extra_tabs(driver, app_handle)
-            return final_url
+        if valid_real_attachment_url(captured):
+            last_real_url = clean(captured)
+            if first_real_seen_at is None:
+                first_real_seen_at = time.time()
 
-        # If navigation started a download and Chrome leaves about:blank, the
-        # exact opened href is acceptable ONLY when it itself is a strict .pdf.
-        if strict_pdf_url(href):
-            print(f"FINAL .pdf URL copied from the exact opened Attachment link: {href}")
-            close_extra_tabs(driver, app_handle)
-            return href
+        time.sleep(0.2)
 
-        time.sleep(0.25)
+    if last_real_url and valid_real_attachment_url(last_real_url):
+        print(f"FINAL attachment URL copied after wait: {last_real_url}")
+        close_extra_tabs(driver, app_handle)
+        return last_real_url
 
-    print("Attachment was opened in a new tab but no final URL ending in .pdf appeared; skipping.")
+    # If Chrome downloads immediately and leaves no readable destination URL,
+    # use the exact Attachment href that was explicitly opened in the new tab.
+    if valid_real_attachment_url(href):
+        print(f"Using exact opened Attachment link: {href}")
+        close_extra_tabs(driver, app_handle)
+        return href
+
+    print("Attachment opened, but no valid real URL was captured; skipping.")
     for value in sorted(observed):
         print(f"  observed intermediate: {value}")
     close_extra_tabs(driver, app_handle)
@@ -394,22 +386,20 @@ def right_click_open_link_in_new_tab(
 
 
 def extract_attachment_url_v4(driver, app_handle: str) -> Optional[str]:
-    """Only exact Attachment anchors are eligible; no generic icon/page scanning."""
+    """Only exact Attachment anchors are eligible; file extension is irrelevant."""
     anchors = exact_attachment_anchors(driver)
     if not anchors:
         print("No exact Attachment <a> link found in this message")
         return None
 
-    # Normally there is one real HyperLink1.  If more exist, try the strongest
-    # exact anchor first and never fall back to generic DIVs/icons.
     for index, anchor in enumerate(anchors, start=1):
         print(f"Trying exact Attachment anchor {index}/{len(anchors)}")
         result = right_click_open_link_in_new_tab(driver, app_handle, anchor)
-        if result and strict_pdf_url(result):
-            print(f"Verified uploadable PDF link: {result}")
+        if result and valid_real_attachment_url(result):
+            print(f"Verified uploadable attachment link: {result}")
             return result
 
-    print("Exact Attachment link(s) found, but none produced a strict .pdf URL")
+    print("Exact Attachment link(s) found, but none produced a usable URL")
     return None
 
 
@@ -418,7 +408,7 @@ runner.existing_state = strict_existing_state
 runner.extract_attachment_url = extract_attachment_url_v4
 runner.legacy.make_title = runner_v2.make_message_title
 runner.legacy.make_driver = network.make_driver_with_network_logs
-runner.legacy.is_pdf_url = strict_pdf_url
+runner.legacy.is_pdf_url = valid_real_attachment_url
 
 
 if __name__ == "__main__":
