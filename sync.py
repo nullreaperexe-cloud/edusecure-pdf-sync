@@ -28,7 +28,7 @@ MAX_ITEMS = int(os.getenv("MAX_ITEMS", "25"))
 DATE_PATTERNS = (
     "%d/%m/%Y", "%d-%m-%Y", "%d.%m.%Y",
     "%d/%m/%y", "%d-%m-%y", "%d.%m.%y",
-    "%d %b %Y", "%d %B %Y", "%b %d, %Y", "%B %d, %Y",
+    "%d %b %Y", "%d %B %Y", "%d-%b-%Y", "%d-%B-%Y", "%d/%b/%Y", "%d/%B/%Y", "%b %d, %Y", "%B %d, %Y",
 )
 
 
