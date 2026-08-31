@@ -24,7 +24,7 @@ INGEST_URL = os.getenv(
     "INGEST_URL",
     "https://eightapdf-study-library.nullreaper-exe.chatgpt.site/automation/ingest",
 )
-MAX_ITEMS = int(os.getenv("MAX_ITEMS", "100"))
+MAX_ITEMS = int(os.getenv("MAX_ITEMS", "25"))
 
 
 def clean(text):
@@ -113,7 +113,7 @@ def main():
         INGEST_URL,
         headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"},
         json=payload,
-        timeout=60,
+        timeout=180,
     )
     response.raise_for_status()
     print(json.dumps(response.json(), indent=2))
