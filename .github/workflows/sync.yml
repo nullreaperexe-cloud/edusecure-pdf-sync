@@ -32,4 +32,4 @@ jobs:
           EDUSECURE_PASSWORD: ${{ secrets.EDUSECURE_PASSWORD }}
           AUTOMATION_TOKEN: ${{ secrets.AUTOMATION_TOKEN }}
           INGEST_URL: https://eightapdf-study-library.nullreaper-exe.chatgpt.site/automation/ingest
-        run: python sync_repair.py
+        run: python sync_repair_v2.py
