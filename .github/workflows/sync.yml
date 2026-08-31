@@ -5,13 +5,21 @@ on:
   push:
     branches:
       - main
+    paths:
+      - "runner.py"
+      - "sync.py"
+      - "requirements.txt"
+      - ".github/workflows/sync.yml"
   schedule:
     - cron: "17 * * * *"
+
+permissions:
+  contents: read
 
 jobs:
   sync:
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 15
     steps:
       - name: Check out repository
         uses: actions/checkout@v5
@@ -25,11 +33,21 @@ jobs:
       - name: Install dependencies
         run: python -m pip install -r requirements.txt
 
-      - name: Sync EduSecure PDFs
+      - name: Sync EduSecure PDFs directly to Firestore
         env:
           PYTHONUNBUFFERED: "1"
           EDUSECURE_USERNAME: ${{ secrets.EDUSECURE_USERNAME }}
           EDUSECURE_PASSWORD: ${{ secrets.EDUSECURE_PASSWORD }}
-          AUTOMATION_TOKEN: ${{ secrets.AUTOMATION_TOKEN }}
-          INGEST_URL: https://eightapdf-study-library.nullreaper-exe.chatgpt.site/automation/ingest
-        run: python sync_repair_v2.py
+          FIREBASE_ADMIN_PASSWORD: ${{ secrets.FIREBASE_ADMIN_PASSWORD }}
+        run: python runner.py
+
+      - name: Upload sync diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: edusecure-sync-diagnostics
+          path: |
+            sync_report.json
+            debug_*.png
+          if-no-files-found: ignore
+          retention-days: 7
