@@ -1,20 +1,22 @@
-"""Third-stage EduSecure attachment repair.
+"""EduSecure attachment repair v3.
 
-Keeps all v1/v2 fixes and adds persistent Chrome DevTools correlation for
-ASP.NET postback downloads, responseExtraInfo headers, chrome://downloads
-inspection, nearby hidden/direct URL discovery, and completed-download fallback.
+Exact browser flow:
+1. Open the EduSecure message detail.
+2. Click the visible `Attachment` link/control for real.
+3. Capture the exact URL opened in the new tab/window.
+4. Upload that URL to the 8aPDF ingest endpoint.
+
+EduSecure homework attachments are not always `.pdf`; teachers also upload
+JPG/JPEG/PNG study sheets.  Those are valid study attachments and must not be
+dropped merely because the URL does not end in `.pdf`.
 """
 from __future__ import annotations
 
-import json
-import os
 import re
 import time
-from pathlib import Path
-from typing import Dict, List, Optional, Tuple
-from urllib.parse import urljoin
+from typing import Dict, List, Optional
+from urllib.parse import urljoin, urlparse
 
-import requests
 from selenium.common.exceptions import WebDriverException
 
 import sync as base
@@ -22,537 +24,239 @@ import sync_repair as r1
 import sync_repair_v2 as r2
 
 
-DOWNLOAD_DIR = Path(r1.DOWNLOAD_DIR)
+STUDY_EXTENSIONS = (".pdf", ".jpg", ".jpeg", ".png", ".webp")
 
 
-def _http_url(value: str | None, base_url: str = "") -> str:
-    if not value:
-        return ""
-    raw = str(value).strip().strip("'\"")
-    if not raw or raw.lower().startswith(("javascript:", "data:", "blob:", "mailto:", "tel:")):
-        return ""
-    try:
-        url = urljoin(base_url, raw)
-    except Exception:
-        return ""
-    return url if url.lower().startswith(("http://", "https://")) else ""
+def clean(value: str | None) -> str:
+    return re.sub(r"\s+", " ", str(value or "")).strip()
 
 
-def _header(headers: object, name: str) -> str:
-    if not isinstance(headers, dict):
-        return ""
-    wanted = name.lower()
-    for key, value in headers.items():
-        if str(key).lower() == wanted:
-            return str(value or "")
-    return ""
-
-
-def _header_pdf_score(headers: object, mime: str = "") -> int:
-    content_type = (_header(headers, "content-type") or mime or "").lower()
-    disposition = _header(headers, "content-disposition").lower()
-    score = 0
-    if "application/pdf" in content_type:
-        score += 120
-    if "attachment" in disposition:
-        score += 80
-    if ".pdf" in disposition:
-        score += 90
-    return score
-
-
-def _url_score(url: str, before_url: str = "") -> int:
+def is_study_attachment_url(url: str | None) -> bool:
+    """True only for a reusable EduSecure study attachment/download URL."""
     if not url:
-        return 0
-    low = url.lower()
-    score = 0
-    if ".pdf" in low:
-        score += 100
-    if r1.looks_like_attachment_url(url):
-        score += 75
-    if any(x in low for x in ("/upload/", "/uploads/", "/document/", "/documents/", "/files/", "/attachment/")):
-        score += 55
-    if before_url and url == before_url:
-        score -= 35
-    return score
+        return False
+
+    value = clean(url)
+    low = value.lower()
+    if not low.startswith(("http://", "https://")):
+        return False
+
+    parsed = urlparse(low)
+    path = parsed.path.lower()
+
+    # Real files teachers attach to homework/circulars.
+    if any(path.endswith(ext) for ext in STUDY_EXTENSIONS):
+        return True
+
+    # EduSecure's normal attachment directory can contain extension-less files.
+    if "/studentinfo/homework/" in path or "/studentinfo/attachment" in path:
+        return True
+
+    # Download handlers without .pdf suffix.
+    if r1.looks_like_attachment_url(value):
+        return True
+
+    return False
 
 
-def nearby_direct_attachment_url(driver, path: str) -> Optional[str]:
-    """Search the attachment control's nearby DOM for hidden/sibling file URLs."""
-    js = r"""
-    const path = arguments[0];
-    function getEl(path) {
-      if (!path) return null;
-      if (path.startsWith('id:')) return document.getElementById(path.slice(3));
-      if (path.startsWith('css:')) return document.querySelector(path.slice(4));
-      return null;
-    }
-    function abs(v) { try { return new URL(v, location.href).href; } catch(e) { return ''; } }
-    const el = getEl(path);
-    if (!el) return [];
-    const out = [];
-    const seen = new Set();
-    let root = el;
-    for (let i=0; i<5 && root && root.parentElement; i++) root = root.parentElement;
-    root = root || el;
-    const nodes = [root].concat(Array.from(root.querySelectorAll('*')));
-    for (const n of nodes) {
-      if (!n || !n.getAttribute) continue;
-      for (const name of ['href','src','data','data-url','data-href','data-src','value','formaction','onclick']) {
-        const raw = n.getAttribute(name) || '';
-        if (!raw) continue;
-        const vals = [raw];
-        const quoted = raw.match(/['\"]([^'\"]+)['\"]/g) || [];
-        for (const q of quoted) vals.push(q.slice(1,-1));
-        for (const v of vals) {
-          const a = abs(v);
-          if (!a || seen.has(a)) continue;
-          seen.add(a);
-          out.push({url:a, attr:name, text:(n.innerText||n.textContent||'').replace(/\s+/g,' ').trim().slice(0,180)});
-        }
-      }
-    }
-    return out.slice(0,250);
-    """
+def resolve_url(raw: str | None, current_url: str) -> str:
+    if not raw:
+        return ""
+    value = clean(raw).strip("'\"")
+    if not value or value.lower().startswith(("javascript:", "data:", "blob:")):
+        return ""
     try:
-        values = driver.execute_script(js, path) or []
+        return urljoin(current_url, value)
     except Exception:
-        return None
-
-    before = driver.current_url
-    ranked: List[Tuple[int, str, str]] = []
-    for item in values:
-        url = _http_url(item.get("url"), before)
-        if not url:
-            continue
-        score = _url_score(url, before)
-        low = url.lower()
-        if any(x in low for x in ("download", "attachment", "getfile", "filehandler")):
-            score += 50
-        if score >= 90:
-            ranked.append((score, url, str(item.get("attr") or "")))
-
-    if not ranked:
-        return None
-    ranked.sort(key=lambda x: x[0], reverse=True)
-    score, url, attr = ranked[0]
-    print(f"Nearby DOM attachment URL found ({attr}, score={score}): {url}")
-    return url
+        return ""
 
 
-def _new_download_files(before: set[str]) -> List[Path]:
+def derive_message_title(text: str, attachment_url: str = "", number: int = 0) -> str:
+    """Build title from the actual message, never from the word Attachment."""
+    raw = clean(text)
+
+    # School Diary: Home Work text is the clearest human title.
+    match = re.search(
+        r"Home\s*Work\s*:?\s*(.*?)(?=\s*Class\s*Work\s*:?|\s*Attachment\b|$)",
+        raw,
+        flags=re.I,
+    )
+    if match:
+        title = clean(match.group(1))
+        if title and title.lower() not in {"attachment", "attach", "download"}:
+            return title[:140].rstrip(" -:,")
+
+    # Message/Circular fallback: remove UI/type/date labels and retain message text.
+    title = raw
+    title = re.sub(r"\b(?:School\s*Diary|Circular|Announcement|Message)\b", " ", title, flags=re.I)
+    title = re.sub(r"\b[A-Z][a-z]{2,8}\s+\d{1,2},\s+\d{4}\b", " ", title)
+    title = re.sub(r"\b(?:Home\s*Work|Class\s*Work)\s*:?", " ", title, flags=re.I)
+    title = re.sub(r"\b(?:Attachment|Attach|Download|Open|Click Here)\b", " ", title, flags=re.I)
+    title = clean(title).strip(" -:,")
+
+    if title and title.lower() != "attachment":
+        if len(title) > 140:
+            title = title[:140].rsplit(" ", 1)[0]
+        return title
+
+    # Last fallback is filename, never literal Attachment.
     try:
-        files = []
-        for p in DOWNLOAD_DIR.iterdir():
-            if not p.is_file():
-                continue
-            if p.name in before:
-                continue
-            if p.name.endswith(".crdownload"):
-                continue
-            files.append(p)
-        return sorted(files, key=lambda p: p.stat().st_mtime, reverse=True)
+        fallback = base.title_from_pdf_url(attachment_url)
     except Exception:
-        return []
+        fallback = "Study Material"
+    if clean(fallback).lower() == "attachment":
+        fallback = "Study Material"
+    return clean(fallback) or f"Study Material {number}".strip()
 
 
-def _download_snapshot() -> set[str]:
-    try:
-        DOWNLOAD_DIR.mkdir(parents=True, exist_ok=True)
-        return {p.name for p in DOWNLOAD_DIR.iterdir() if p.is_file()}
-    except Exception:
-        return set()
+def direct_attachment_from_target(target: Dict[str, object], current_url: str) -> Optional[str]:
+    values: List[str] = []
 
+    for key in ("directStrings",):
+        raw = target.get(key)
+        if isinstance(raw, list):
+            values.extend(str(x) for x in raw if x)
 
-def chrome_download_items(driver, app_handle: str) -> List[Dict[str, str]]:
-    """Read Chrome's own download model; it often exposes the original/final URL."""
-    download_handle = None
-    try:
-        driver.switch_to.window(app_handle)
-        driver.switch_to.new_window("tab")
-        download_handle = driver.current_window_handle
-        driver.get("chrome://downloads/")
-        time.sleep(0.35)
-        js = r"""
-        const manager = document.querySelector('downloads-manager');
-        if (!manager) return [];
-        const root = manager.shadowRoot;
-        const list = root && root.querySelector('#downloadsList');
-        const items = (list && (list.items || list._items)) || manager.items || manager._items || [];
-        return Array.from(items).map(x => ({
-          url: x.url || '',
-          finalUrl: x.finalUrl || '',
-          fileUrl: x.fileUrl || '',
-          filePath: x.filePath || '',
-          fileName: x.fileName || '',
-          state: String(x.state || ''),
-          mimeType: x.mimeType || '',
-          referrerUrl: x.referrerUrl || ''
-        }));
-        """
-        return driver.execute_script(js) or []
-    except Exception as exc:
-        print(f"chrome://downloads inspection unavailable: {str(exc)[:140]}")
-        return []
-    finally:
-        try:
-            if download_handle and download_handle in driver.window_handles:
-                driver.switch_to.window(download_handle)
-                driver.close()
-        except Exception:
-            pass
-        try:
-            driver.switch_to.window(app_handle)
-        except Exception:
-            pass
+    for key in ("directUrl", "directPdf"):
+        value = target.get(key)
+        if value:
+            values.append(str(value))
 
-
-def best_url_from_download_items(items: List[Dict[str, str]], before_url: str) -> Optional[str]:
-    ranked: List[Tuple[int, str, str]] = []
-    for item in items:
-        filename = str(item.get("fileName") or "")
-        mime = str(item.get("mimeType") or "").lower()
-        for field in ("finalUrl", "url", "referrerUrl"):
-            url = _http_url(item.get(field), before_url)
-            if not url:
-                continue
-            score = _url_score(url, before_url)
-            if filename.lower().endswith(".pdf"):
-                score += 90
-            if "application/pdf" in mime:
-                score += 90
-            if field == "finalUrl":
-                score += 25
-            if score > 0:
-                ranked.append((score, url, f"{field}, filename={filename!r}"))
-    if not ranked:
-        return None
-    ranked.sort(key=lambda x: x[0], reverse=True)
-    score, url, why = ranked[0]
-    print(f"Captured attachment URL from Chrome downloads ({why}, score={score}): {url}")
-    return url
-
-
-def collect_performance(driver, state: Dict[str, object], before_url: str) -> Optional[str]:
-    """Persistently correlate request, response, ExtraInfo and download events."""
-    requests_by_id: Dict[str, Dict[str, object]] = state.setdefault("requests", {})  # type: ignore[assignment]
-    responses_by_id: Dict[str, Dict[str, object]] = state.setdefault("responses", {})  # type: ignore[assignment]
-    extra_by_id: Dict[str, Dict[str, object]] = state.setdefault("extra", {})  # type: ignore[assignment]
-    candidates: List[Tuple[int, str, str]] = state.setdefault("candidates", [])  # type: ignore[assignment]
-
-    try:
-        entries = driver.get_log("performance")
-    except Exception:
-        entries = []
-
-    for entry in entries:
-        try:
-            outer = json.loads(entry.get("message", "{}"))
-            message = outer.get("message", {}) or {}
-            method = str(message.get("method") or "")
-            params = message.get("params", {}) or {}
-        except Exception:
-            continue
-
-        if method in ("Page.downloadWillBegin", "Browser.downloadWillBegin"):
-            url = _http_url(params.get("url"), before_url)
-            filename = str(params.get("suggestedFilename") or "")
-            if url:
-                score = 240 + (80 if filename.lower().endswith(".pdf") else 0)
-                candidates.append((score, url, f"downloadWillBegin filename={filename!r}"))
-            continue
-
-        request_id = str(params.get("requestId") or "")
-
-        if method == "Network.requestWillBeSent":
-            req = params.get("request", {}) or {}
-            url = _http_url(req.get("url"), before_url)
-            record = {
-                "url": url,
-                "method": str(req.get("method") or "GET").upper(),
-                "postData": str(req.get("postData") or ""),
-                "headers": req.get("headers", {}) or {},
-                "type": str(params.get("type") or ""),
-                "timestamp": params.get("timestamp"),
-            }
-            if request_id:
-                requests_by_id[request_id] = record
-            redirect = params.get("redirectResponse", {}) or {}
-            if redirect and url:
-                redirect_headers = redirect.get("headers", {}) or {}
-                score = _header_pdf_score(redirect_headers, str(redirect.get("mimeType") or ""))
-                if score:
-                    candidates.append((score + 70, url, "redirect response PDF headers"))
-            if url and r1.looks_like_attachment_url(url):
-                candidates.append((150 + _url_score(url, before_url), url, "request URL"))
-            continue
-
-        if method == "Network.responseReceived":
-            resp = params.get("response", {}) or {}
-            if request_id:
-                responses_by_id[request_id] = resp
-            url = _http_url(resp.get("url"), before_url)
-            if url:
-                score = _header_pdf_score(resp.get("headers", {}) or {}, str(resp.get("mimeType") or ""))
-                score += _url_score(url, before_url)
-                if score >= 100:
-                    candidates.append((score + 80, url, "responseReceived"))
-            continue
-
-        if method == "Network.responseReceivedExtraInfo":
-            if request_id:
-                extra_by_id[request_id] = params.get("headers", {}) or {}
-            continue
-
-    # Correlate ExtraInfo with the original request URL. This is the important
-    # ASP.NET case: POST URL can be Announcement.aspx while headers say PDF.
-    for request_id, headers in list(extra_by_id.items()):
-        req = requests_by_id.get(request_id, {})
-        url = _http_url(req.get("url"), before_url)
-        if not url:
-            continue
-        score = _header_pdf_score(headers)
-        if score:
-            method = str(req.get("method") or "")
-            same = url == before_url
-            candidates.append((score + 100 - (25 if same else 0), url, f"responseExtraInfo {method} PDF headers"))
-
-    if not candidates:
-        return None
-
-    # De-dupe and choose strongest evidence.
-    best_for_url: Dict[str, Tuple[int, str]] = {}
-    for score, url, why in candidates:
-        old = best_for_url.get(url)
-        if old is None or score > old[0]:
-            best_for_url[url] = (score, why)
-    ranked = sorted(((score, url, why) for url, (score, why) in best_for_url.items()), reverse=True)
-    score, url, why = ranked[0]
-    state["best"] = (score, url, why)
-
-    # Very strong evidence can return immediately. We keep weaker same-page
-    # postback evidence around briefly so chrome://downloads can reveal a better final URL.
-    if score >= 260 and (url != before_url or "downloadWillBegin" in why):
-        print(f"Captured verified PDF/download URL ({why}, score={score}): {url}")
-        return url
-    return None
-
-
-def replay_last_postback_for_redirect(driver, state: Dict[str, object], before_url: str) -> Optional[str]:
-    """Replay captured ASP.NET POST only to discover a redirect/content-location URL."""
-    requests_by_id = state.get("requests", {})
-    if not isinstance(requests_by_id, dict):
-        return None
-    posts = []
-    for req in requests_by_id.values():
-        if not isinstance(req, dict):
-            continue
-        if str(req.get("method") or "").upper() != "POST":
-            continue
-        url = _http_url(req.get("url"), before_url)
-        if not url:
-            continue
-        posts.append(req)
-    if not posts:
-        return None
-
-    req = posts[-1]
-    url = _http_url(req.get("url"), before_url)
-    post_data = str(req.get("postData") or "")
-    if not url or not post_data:
-        return None
-
-    try:
-        session = requests.Session()
-        for cookie in driver.get_cookies():
-            try:
-                session.cookies.set(cookie.get("name"), cookie.get("value"), domain=cookie.get("domain"), path=cookie.get("path") or "/")
-            except Exception:
-                pass
-
-        headers = req.get("headers", {}) if isinstance(req.get("headers"), dict) else {}
-        safe_headers = {}
-        for name in ("Content-Type", "Referer", "User-Agent", "Origin"):
-            value = _header(headers, name)
-            if value:
-                safe_headers[name] = value
-
-        response = session.post(url, data=post_data, headers=safe_headers, allow_redirects=True, timeout=30)
-        final_url = _http_url(response.url, before_url)
-        location = _http_url(response.headers.get("Content-Location") or response.headers.get("Location"), final_url or before_url)
-        for candidate, why in ((location, "Content-Location/Location"), (final_url, "POST replay final URL")):
-            if candidate and candidate != before_url and (_url_score(candidate, before_url) >= 70 or _header_pdf_score(response.headers, response.headers.get("Content-Type", "")) > 0):
-                print(f"Captured attachment URL from {why}: {candidate}")
-                return candidate
-    except Exception as exc:
-        print(f"ASP.NET postback replay could not derive a URL: {str(exc)[:150]}")
-    return None
-
-
-def repaired_get_pdf_url_from_attachment_v3(driver, target: Dict[str, str], app_handle: str) -> Optional[str]:
-    # Keep v2's direct control parsing first.
-    current = driver.current_url
-    for raw in target.get("directStrings") or []:
-        candidate = r2._candidate_url(str(raw), current)
-        if candidate:
-            print(f"Direct attachment URL found in control: {candidate}")
+    # V2 stores the complete href in attrs/html too, but directStrings is preferred.
+    for raw in values:
+        candidate = resolve_url(raw, current_url)
+        if candidate and is_study_attachment_url(candidate):
             return candidate
 
-    nearby = nearby_direct_attachment_url(driver, target.get("path", ""))
-    if nearby:
-        return nearby
+        for quoted in re.findall(
+            r"['\"]([^'\"]+(?:\.pdf|\.jpe?g|\.png|\.webp|download[^'\"]*|attachment[^'\"]*|getfile[^'\"]*))['\"]",
+            raw,
+            flags=re.I,
+        ):
+            candidate = resolve_url(quoted, current_url)
+            if candidate and is_study_attachment_url(candidate):
+                return candidate
 
+    return None
+
+
+def click_attachment_and_capture_opened_url(
+    driver,
+    target: Dict[str, object],
+    app_handle: str,
+) -> Optional[str]:
+    """Click Attachment, then copy the exact URL that Chrome opens."""
     before_url = driver.current_url
     before_tabs = set(driver.window_handles)
-    before_files = _download_snapshot()
-    known_resources = r2.current_resource_urls(driver)
+    fallback_direct = direct_attachment_from_target(target, before_url)
+
     r1.drain_performance_log(driver)
-    r2.install_click_trace(driver)
 
-    if not r2.real_click_control(driver, target.get("path", "")):
-        print("Real attachment control click failed.")
-        return None
+    path = str(target.get("path") or "")
+    if not r2.real_click_control(driver, path):
+        print("Attachment control click failed.")
+        return fallback_direct
 
-    perf_state: Dict[str, object] = {}
-    deadline = time.time() + 12.0
-    download_seen = False
+    deadline = time.time() + 8.0
 
     while time.time() < deadline:
-        captured = collect_performance(driver, perf_state, before_url)
-        if captured:
-            r1._close_extra_tabs_and_restore(driver, app_handle)
-            return captured
-
         try:
             handles = set(driver.window_handles)
             new_tabs = list(handles - before_tabs)
+
             if new_tabs:
+                # This is the exact user flow: Attachment -> new tab -> copy URL.
                 driver.switch_to.window(new_tabs[-1])
-                time.sleep(0.25)
-                candidate = _http_url(driver.current_url, before_url)
-                if candidate and (r1.looks_like_attachment_url(candidate) or ".pdf" in candidate.lower()):
-                    print(f"Captured attachment URL from new tab: {candidate}")
-                    r1._close_extra_tabs_and_restore(driver, app_handle)
-                    return candidate
-                page_pdf = base.extract_pdf_from_current_page(driver)
-                if page_pdf:
-                    r1._close_extra_tabs_and_restore(driver, app_handle)
-                    return page_pdf
+                time.sleep(0.35)
+                opened_url = clean(driver.current_url)
+                print(f"Attachment opened in new tab: {opened_url}")
+
+                if opened_url.startswith(("http://", "https://")) and is_study_attachment_url(opened_url):
+                    try:
+                        driver.close()
+                    finally:
+                        driver.switch_to.window(app_handle)
+                    print(f"Copied opened attachment URL: {opened_url}")
+                    return opened_url
+
+                # If Chrome first opens a viewer/wrapper, inspect its page for the file.
+                page_file = base.extract_pdf_from_current_page(driver)
+                if page_file:
+                    try:
+                        driver.close()
+                    finally:
+                        driver.switch_to.window(app_handle)
+                    print(f"Copied attachment URL from opened viewer: {page_file}")
+                    return page_file
+
+                driver.close()
                 driver.switch_to.window(app_handle)
 
+            # Some attachments navigate the same tab rather than target=_blank.
             driver.switch_to.window(app_handle)
-            candidate = r2.trace_url_candidate(driver, r2.read_click_trace(driver))
-            if candidate:
-                return candidate
-            candidate = r2.resource_url_candidate(driver, known_resources)
-            if candidate:
-                return candidate
-            candidate = r2.dom_attachment_url(driver)
-            if candidate:
-                return candidate
+            now_url = clean(driver.current_url)
+            if now_url != before_url and is_study_attachment_url(now_url):
+                print(f"Attachment opened in same tab: {now_url}")
+                return now_url
+
+            # Network fallback for download handlers.
+            captured = r1.attachment_url_from_performance(driver)
+            if captured and is_study_attachment_url(captured):
+                print(f"Copied attachment URL from browser network: {captured}")
+                return captured
         except WebDriverException:
             pass
 
-        new_files = _new_download_files(before_files)
-        if new_files and not download_seen:
-            download_seen = True
-            print("Browser download completed: " + ", ".join(p.name for p in new_files[:3]))
-            items = chrome_download_items(driver, app_handle)
-            candidate = best_url_from_download_items(items, before_url)
-            if candidate and candidate != before_url:
-                return candidate
+        time.sleep(0.2)
 
-        time.sleep(0.25)
+    # EduSecure already exposes the same URL in the Attachment anchor href.
+    if fallback_direct:
+        print(f"New-tab URL was not readable; using exact Attachment href: {fallback_direct}")
+        return fallback_direct
 
-    # Final event drain and Chrome download inspection.
-    collect_performance(driver, perf_state, before_url)
-    new_files = _new_download_files(before_files)
-    if new_files:
-        print("Confirmed downloaded file(s): " + ", ".join(p.name for p in new_files[:3]))
-        candidate = best_url_from_download_items(chrome_download_items(driver, app_handle), before_url)
-        if candidate and candidate != before_url:
-            return candidate
-
-    # Try to turn an ASP.NET POSTback into its redirect/final handler URL.
-    candidate = replay_last_postback_for_redirect(driver, perf_state, before_url)
-    if candidate:
-        return candidate
-
-    # If headers/download evidence proves this exact URL returns the PDF, keep it
-    # as a last resort. This is better than dropping a real attachment entirely.
-    best = perf_state.get("best")
-    if isinstance(best, tuple) and len(best) == 3:
-        score, url, why = best
-        if int(score) >= 200 and _http_url(str(url), before_url):
-            print(f"Using verified attachment response URL as fallback ({why}, score={score}): {url}")
-            return str(url)
-
-    try:
-        driver.switch_to.window(app_handle)
-        print("Click trace after failed attachment attempt:")
-        print(json.dumps(r2.read_click_trace(driver)[-20:], indent=2, ensure_ascii=False))
-        requests_by_id = perf_state.get("requests", {})
-        if isinstance(requests_by_id, dict):
-            summary = []
-            for req in list(requests_by_id.values())[-12:]:
-                if not isinstance(req, dict):
-                    continue
-                summary.append({"method": req.get("method"), "url": req.get("url"), "type": req.get("type"), "hasPostData": bool(req.get("postData"))})
-            print("Recent browser requests after Attachment click:")
-            print(json.dumps(summary, indent=2, ensure_ascii=False))
-    except Exception:
-        pass
-
-    r1._close_extra_tabs_and_restore(driver, app_handle)
-    print("Attachment clicked, but no reusable download URL could be proven.")
     return None
 
 
-def repaired_extract_pdf_from_current_message_detail_v3(driver, app_handle: str) -> Optional[str]:
-    direct = base.extract_pdf_from_current_page(driver)
-    if direct:
-        return direct
-
+def repaired_extract_attachment(driver, app_handle: str) -> Optional[str]:
     targets = r2.find_attachment_targets_v2(driver)
     if not targets:
         targets = r1.find_attachment_targets(driver)
+
+    # Only try controls that actually represent the Attachment link first.
+    targets = sorted(
+        targets,
+        key=lambda item: (
+            0 if "attachment" in clean(str(item.get("text") or item.get("labelText") or "")).lower() else 1,
+            -int(item.get("score") or 0),
+        ),
+    )
+
     if not targets:
-        print("No attachment control detected on message detail page.")
-        return None
+        # True PDFs can also be embedded without a visible Attachment control.
+        direct = base.extract_pdf_from_current_page(driver)
+        return direct if direct and is_study_attachment_url(direct) else None
 
-    detail_url = driver.current_url
-    print(f"Attachment controls detected (v3): {len(targets)}")
+    print(f"Attachment controls detected: {len(targets)}")
 
-    for i, target in enumerate(targets, start=1):
-        print(
-            f"Trying attachment control {i}/{len(targets)} "
-            f"relation={target.get('relation','')} score={target.get('score','')}: "
-            f"{target.get('text','')[:120]!r}"
-        )
-        url = repaired_get_pdf_url_from_attachment_v3(driver, target, app_handle)
+    for index, target in enumerate(targets, start=1):
+        text = clean(str(target.get("text") or ""))
+        print(f"Trying Attachment control {index}/{len(targets)}: {text[:120]!r}")
+
+        url = click_attachment_and_capture_opened_url(driver, target, app_handle)
         if url:
-            print(f"Real PDF/download URL extracted: {url}")
+            print(f"Real EduSecure attachment URL extracted: {url}")
             return url
-
-        try:
-            driver.switch_to.window(app_handle)
-            if driver.current_url != detail_url:
-                driver.get(detail_url)
-                base.wait_ready(driver)
-                time.sleep(0.7)
-        except Exception:
-            pass
 
     return None
 
 
-# Preserve v1's network-enabled driver and relaxed URL validator. Replace the
-# extraction layer with v3. base.main() will then POST the extracted URL to the
-# configured /automation/ingest endpoint exactly like before.
+# Patch the existing sync engine. Main flow, login, date filtering, duplicate
+# handling and ingest POST stay unchanged.
 base.make_driver = r1.make_driver_with_network_logs
-base.is_pdf_url = r1.repaired_is_pdf_url
-base.get_pdf_url_from_attachment = repaired_get_pdf_url_from_attachment_v3
-base.extract_pdf_from_current_message_detail = repaired_extract_pdf_from_current_message_detail_v3
+base.is_pdf_url = is_study_attachment_url
+base.get_pdf_url_from_attachment = click_attachment_and_capture_opened_url
+base.extract_pdf_from_current_message_detail = repaired_extract_attachment
+base.make_title = derive_message_title
 
 
 if __name__ == "__main__":
