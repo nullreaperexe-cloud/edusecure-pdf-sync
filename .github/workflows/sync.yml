@@ -7,10 +7,6 @@ on:
       - main
     paths:
       - "runner.py"
-      - "runner_v2.py"
-      - "runner_v3.py"
-      - "runner_v4.py"
-      - "runner_v5.py"
       - "sync.py"
       - "sync_repair.py"
       - "requirements.txt"
@@ -55,7 +51,7 @@ jobs:
           END_TIME=$(( $(date +%s) + 19800 ))
           ITERATION=0
 
-          echo "24/7 worker started. runner_v5.py will run every 5 minutes for about 5.5 hours."
+          echo "24/7 worker started. sync_repair.py will run every 5 minutes for about 5.5 hours."
 
           while [ "$(date +%s)" -lt "$END_TIME" ]; do
             ITERATION=$((ITERATION + 1))
@@ -63,7 +59,7 @@ jobs:
             echo ""
             echo "===== EduSecure check #${ITERATION} at $(date -u '+%Y-%m-%d %H:%M:%S UTC') ====="
 
-            python runner_v5.py
+            python sync_repair.py
             EXIT_CODE=$?
             if [ "$EXIT_CODE" -ne 0 ]; then
               echo "Check #${ITERATION} exited with code ${EXIT_CODE}. Keeping 24/7 worker alive for the next check."
