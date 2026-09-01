@@ -1,46 +1,115 @@
-"""Robust runner for EduSecure PDF sync.
+"""Single consolidated repair runner for the EduSecure -> 8aPDF automation.
 
-This wrapper keeps the existing sync.py flow but fixes attachment detection for
-EduSecure messages whose PDFs are opened/downloaded through ASP.NET handlers,
-postbacks, same-tab navigation, or download URLs that do not end in .pdf.
+This file contains the active fixes that were previously spread across
+runner_v2.py, runner_v4.py, runner_v5.py and sync_repair.py.
+
+Base engines remain in runner.py and sync.py. The GitHub workflow should run
+this file directly.
 """
 from __future__ import annotations
 
 import json
 import re
+import sys
 import time
+from datetime import date, datetime, timedelta
 from pathlib import Path
-from typing import Dict, List, Optional
-from urllib.parse import urljoin, urlparse
+from typing import Any, Dict, List, Optional, Set
+from urllib.parse import urlparse
 
+import requests
 from selenium import webdriver
 from selenium.common.exceptions import WebDriverException
+from selenium.webdriver.common.action_chains import ActionChains
+from selenium.webdriver.common.keys import Keys
 
-import sync as base
+import runner
 
 
+WEBSITE_URL = "https://eightapdf-study-library.nullreaper-exe.chatgpt.site/?i=1"
 DOWNLOAD_DIR = "/tmp/edusecure-downloads"
+BAD_URL_RE = re.compile(
+    r"(?:/ParentApp/morelinks\.aspx(?:\?|$)|/images/loader\.gif(?:\?|$)|dashboard\.aspx(?:\?|$)|/login(?:\?|/|$))",
+    re.I,
+)
+
+ORIGINAL_LIST = runner.list_firestore_materials
+ORIGINAL_EXISTING_STATE = runner.existing_state
+WEBSITE_LATEST_DATE: Optional[date] = None
 
 
-def looks_like_attachment_url(url: str | None) -> bool:
-    if not url:
+def clean(value: Any) -> str:
+    return runner.clean(value)
+
+
+# ---------------------------------------------------------------------------
+# Title repair
+# ---------------------------------------------------------------------------
+
+def make_message_title(text: str, pdf_url: str, number: int = 0) -> str:
+    """Use the actual EduSecure message/homework text as the uploaded title."""
+    raw = clean(text)
+
+    hw = re.search(r"Home\s*Work\s*:\s*(.*?)(?=\s*Class\s*Work\s*:|$)", raw, flags=re.I)
+    cw = re.search(r"Class\s*Work\s*:\s*(.*)$", raw, flags=re.I)
+
+    candidate = ""
+    if hw:
+        candidate = clean(hw.group(1))
+        if candidate.lower() in {"-", "--", "nil", "none"}:
+            candidate = ""
+    if not candidate and cw:
+        candidate = clean(cw.group(1))
+    if not candidate:
+        candidate = raw
+
+    candidate = re.sub(r"^(School\s*Diary|Circular|Message)\s+", "", candidate, flags=re.I)
+    candidate = re.sub(r"\b[A-Z][a-z]{2,8}\s+\d{1,2},\s+\d{4}\b", "", candidate)
+    candidate = re.sub(
+        r"\bAttachment\b|\bAttach\b|\bDownload\b|\bOpen\b|\bClick\s+Here\b",
+        "",
+        candidate,
+        flags=re.I,
+    )
+    candidate = re.sub(r"\s+", " ", candidate).strip(" -:|,")
+
+    if not candidate or candidate.lower() in {"attachment", "pdf", "document"}:
+        candidate = runner.legacy.title_from_pdf_url(pdf_url)
+
+    if len(candidate) > 125:
+        candidate = candidate[:125].rsplit(" ", 1)[0]
+
+    return candidate or f"PDF {number}".strip()
+
+
+# ---------------------------------------------------------------------------
+# Browser/network repair
+# ---------------------------------------------------------------------------
+
+def valid_real_attachment_url(url: Optional[str]) -> bool:
+    """Accept any real HTTP(S) attachment URL, regardless of file extension."""
+    value = clean(url)
+    if not re.match(r"^https?://", value, re.I):
         return False
-    value = str(url).strip()
-    low = value.lower()
-    if not low.startswith(("http://", "https://")):
+    if BAD_URL_RE.search(value):
+        return False
+    if value.lower().startswith(("javascript:", "data:", "blob:")):
+        return False
+    return True
+
+
+def looks_like_attachment_url(url: Optional[str]) -> bool:
+    """Network-log helper used only to rank likely attachment requests."""
+    if not valid_real_attachment_url(url):
         return False
 
-    # Never mistake EduSecure message/list navigation for a PDF.
-    if "dashboard.aspx" in low:
-        return False
-    if "announcement.aspx" in low and "download" not in low and "attachment" not in low and ".pdf" not in low:
-        return False
+    low = clean(url).lower()
+    parsed = urlparse(low)
+    path_query = f"{parsed.path}?{parsed.query}"
 
-    if ".pdf" in low:
+    if "/studentinfo/homework/" in parsed.path.lower():
         return True
 
-    parsed = urlparse(low)
-    haystack = f"{parsed.path}?{parsed.query}"
     strong_markers = (
         "downloadfile",
         "download-file",
@@ -56,11 +125,10 @@ def looks_like_attachment_url(url: str | None) -> bool:
         "viewdocument",
         "viewfile",
     )
-    return any(marker in haystack for marker in strong_markers)
+    if any(marker in path_query for marker in strong_markers):
+        return True
 
-
-def repaired_is_pdf_url(url: str | None) -> bool:
-    return looks_like_attachment_url(url)
+    return bool(re.search(r"\.(?:pdf|jpe?g|png|webp|docx?|xlsx?|pptx?|txt|zip)(?:\?|$)", low, re.I))
 
 
 def make_driver_with_network_logs() -> webdriver.Chrome:
@@ -87,14 +155,12 @@ def make_driver_with_network_logs() -> webdriver.Chrome:
     Path(DOWNLOAD_DIR).mkdir(parents=True, exist_ok=True)
     driver = webdriver.Chrome(options=options)
 
-    try:
-        driver.execute_cdp_cmd("Network.enable", {})
-    except Exception:
-        pass
-    try:
-        driver.execute_cdp_cmd("Page.enable", {})
-    except Exception:
-        pass
+    for command in ("Network.enable", "Page.enable"):
+        try:
+            driver.execute_cdp_cmd(command, {})
+        except Exception:
+            pass
+
     try:
         driver.execute_cdp_cmd(
             "Browser.setDownloadBehavior",
@@ -112,7 +178,7 @@ def make_driver_with_network_logs() -> webdriver.Chrome:
     return driver
 
 
-def drain_performance_log(driver: webdriver.Chrome) -> None:
+def drain_performance_log(driver) -> None:
     try:
         driver.get_log("performance")
     except Exception:
@@ -129,8 +195,8 @@ def _header_value(headers: object, name: str) -> str:
     return ""
 
 
-def attachment_url_from_performance(driver: webdriver.Chrome) -> Optional[str]:
-    """Return the strongest attachment URL observed in Chrome network/page logs."""
+def attachment_url_from_performance(driver) -> Optional[str]:
+    """Return the strongest real attachment URL observed in Chrome logs."""
     best: List[tuple[int, str, str]] = []
     try:
         entries = driver.get_log("performance")
@@ -147,52 +213,42 @@ def attachment_url_from_performance(driver: webdriver.Chrome) -> Optional[str]:
             continue
 
         if method in ("Page.downloadWillBegin", "Browser.downloadWillBegin"):
-            url = str(params.get("url") or "")
-            filename = str(params.get("suggestedFilename") or "")
-            if url.startswith(("http://", "https://")):
-                score = 100
-                if filename.lower().endswith(".pdf"):
-                    score += 40
+            url = clean(params.get("url"))
+            filename = clean(params.get("suggestedFilename"))
+            if valid_real_attachment_url(url):
+                score = 160 if looks_like_attachment_url(url) else 80
+                if filename:
+                    score += 30
                 best.append((score, url, f"download event filename={filename!r}"))
             continue
 
         if method == "Network.responseReceived":
             response = params.get("response", {}) or {}
-            url = str(response.get("url") or "")
-            mime = str(response.get("mimeType") or "").lower()
+            url = clean(response.get("url"))
+            if not valid_real_attachment_url(url):
+                continue
+
+            mime = clean(response.get("mimeType")).lower()
             headers = response.get("headers", {}) or {}
             content_type = _header_value(headers, "content-type").lower()
             disposition = _header_value(headers, "content-disposition").lower()
-            if not url.startswith(("http://", "https://")):
-                continue
 
             score = 0
-            if "application/pdf" in mime or "application/pdf" in content_type:
-                score += 100
-            if "filename=" in disposition and ".pdf" in disposition:
-                score += 90
-            elif "attachment" in disposition:
-                score += 60
-            if ".pdf" in url.lower():
-                score += 70
             if looks_like_attachment_url(url):
-                score += 45
+                score += 120
+            if "attachment" in disposition or "filename=" in disposition:
+                score += 100
+            if "application/pdf" in mime or "application/pdf" in content_type:
+                score += 95
             if score:
                 best.append((score, url, f"response mime={mime!r} disposition={disposition[:120]!r}"))
             continue
 
         if method == "Network.requestWillBeSent":
             request = params.get("request", {}) or {}
-            url = str(request.get("url") or "")
-            if not url.startswith(("http://", "https://")):
-                continue
-            score = 0
-            if ".pdf" in url.lower():
-                score += 70
-            if looks_like_attachment_url(url):
-                score += 45
-            if score:
-                best.append((score, url, "request URL"))
+            url = clean(request.get("url"))
+            if valid_real_attachment_url(url) and looks_like_attachment_url(url):
+                best.append((90, url, "request URL"))
 
     if not best:
         return None
@@ -203,111 +259,181 @@ def attachment_url_from_performance(driver: webdriver.Chrome) -> Optional[str]:
     return url
 
 
-def find_attachment_targets(driver: webdriver.Chrome) -> List[Dict[str, str]]:
-    """Find visible attachment controls, including icon/image/input based buttons."""
+# ---------------------------------------------------------------------------
+# Firestore cleanup repair
+# ---------------------------------------------------------------------------
+
+def firestore_delete_document(document_name: str, id_token: str) -> bool:
+    if not document_name:
+        return False
+    response = requests.delete(
+        f"https://firestore.googleapis.com/v1/{document_name}",
+        params={"key": runner.FIREBASE_API_KEY},
+        headers=runner.firestore_headers(id_token),
+        timeout=25,
+    )
+    return response.ok or response.status_code == 404
+
+
+def list_and_cleanup_materials(id_token: str) -> List[Dict[str, Any]]:
+    """Remove only known-bad intermediate URLs created by this automation."""
+    materials = ORIGINAL_LIST(id_token)
+    kept: List[Dict[str, Any]] = []
+    removed = 0
+
+    for item in materials:
+        url = clean(item.get("pdf_url"))
+        source = clean(item.get("source")).lower()
+        bad_automation_record = (
+            "edusecure" in source and bool(url) and bool(BAD_URL_RE.search(url))
+        )
+
+        if bad_automation_record:
+            if firestore_delete_document(clean(item.get("_name")), id_token):
+                removed += 1
+                print(f"Removed invalid previous EduSecure automation URL: {url}")
+                continue
+        kept.append(item)
+
+    if removed:
+        print(f"Invalid previous EduSecure automation records cleaned: {removed}")
+    return kept
+
+
+# ---------------------------------------------------------------------------
+# Exact Attachment-link repair
+# ---------------------------------------------------------------------------
+
+def exact_attachment_anchors(driver) -> List[Dict[str, str]]:
+    """Return only the real visible <a> link for the message Attachment button."""
     js = r"""
     function visible(el) {
       if (!el) return false;
-      const st = window.getComputedStyle(el);
-      const r = el.getBoundingClientRect();
-      return st.display !== "none" && st.visibility !== "hidden" && r.width > 0 && r.height > 0;
+      const s = getComputedStyle(el), r = el.getBoundingClientRect();
+      return s.display !== 'none' && s.visibility !== 'hidden' &&
+             r.width > 4 && r.height > 4 && r.bottom > 0 && r.top < innerHeight;
+    }
+    function text(el) {
+      return (el.innerText || el.textContent || el.getAttribute('aria-label') ||
+              el.getAttribute('title') || '').replace(/\s+/g,' ').trim();
+    }
+    function abs(u) {
+      try { return new URL(u, location.href).href; } catch(e) { return ''; }
     }
 
-    function textOf(el) {
-      return (
-        el.innerText || el.textContent || el.getAttribute("aria-label") ||
-        el.getAttribute("title") || el.getAttribute("alt") || el.value || ""
-      ).replace(/\s+/g, " ").trim();
-    }
+    const anchors = Array.from(document.querySelectorAll('a[href]')).filter(visible);
+    const out = [];
+    const seen = new Set();
 
-    function makePath(el) {
-      if (!el) return "";
-      if (el.id) return "id:" + el.id;
-      const parts = [];
-      let cur = el;
-      while (cur && cur.nodeType === Node.ELEMENT_NODE && cur !== document.body) {
-        let index = 1;
-        let sib = cur.previousElementSibling;
-        while (sib) {
-          if (sib.tagName === cur.tagName) index++;
-          sib = sib.previousElementSibling;
-        }
-        parts.unshift(cur.tagName.toLowerCase() + ":nth-of-type(" + index + ")");
-        cur = cur.parentElement;
-      }
-      return "css:body > " + parts.join(" > ");
-    }
+    for (const a of anchors) {
+      const t = text(a);
+      const id = a.id || '';
+      const cls = String(a.className || '');
+      const href = abs(a.getAttribute('href') || '');
+      const exactText = /^(attachment|attachments)\s*[:：]?$/i.test(t);
+      const exactEduSecureId = /(?:^|_)HyperLink1$/i.test(id);
 
-    function attrsOf(el) {
-      const out = {};
-      if (!el || !el.attributes) return out;
-      for (const a of Array.from(el.attributes)) out[a.name] = a.value || "";
-      return out;
-    }
+      if (!exactText && !exactEduSecureId) continue;
+      if (!/^https?:/i.test(href)) continue;
+      if (/morelinks\.aspx|loader\.gif|dashboard\.aspx|\/login/i.test(href)) continue;
+      if (seen.has(href)) continue;
+      seen.add(href);
 
-    function rawUrl(el) {
-      if (!el || !el.getAttribute) return "";
-      const names = ["href", "src", "data", "data-url", "data-href", "data-src", "formaction"];
-      for (const name of names) {
-        const value = el.getAttribute(name) || "";
-        if (/^https?:/i.test(value) || /^\//.test(value) || /\.pdf|download|attachment|getfile|filehandler/i.test(value)) {
-          try { return new URL(value, location.href).href; } catch(e) {}
-        }
-      }
-      return "";
-    }
-
-    const nodes = Array.from(document.querySelectorAll(
-      "a, button, input, img, [onclick], [href], [src], [data-url], [data-href], [role='button'], label, svg"
-    ));
-
-    const candidates = [];
-    for (const node of nodes) {
-      if (!visible(node)) continue;
-      const clickable = node.closest("a, button, [onclick], [role='button']") || node;
-      if (!visible(clickable)) continue;
-
-      const text = (textOf(node) + " " + textOf(clickable)).toLowerCase();
-      const attrs = JSON.stringify(attrsOf(node)).toLowerCase() + " " + JSON.stringify(attrsOf(clickable)).toLowerCase();
-      const hay = text + " " + attrs;
-
+      const r = a.getBoundingClientRect();
       let score = 0;
-      if (/attachment|attached/.test(hay)) score += 80;
-      if (/download/.test(hay)) score += 70;
-      if (/\.pdf/.test(hay)) score += 100;
-      if (/view\s*(file|document)|open\s*(file|document)/.test(hay)) score += 55;
-      if (/paperclip|fa-paperclip|attach_file|file_download/.test(hay)) score += 50;
-      if (/getfile|downloadfile|filehandler|documenthandler/.test(hay)) score += 75;
-      if (!score) continue;
+      if (exactText) score += 1000;
+      if (exactEduSecureId) score += 900;
+      if (/HyperLink1/i.test(id)) score += 300;
+      if (r.width <= 220 && r.height <= 80) score += 80;
 
-      const r = clickable.getBoundingClientRect();
-      candidates.push({
-        path: makePath(clickable),
-        text: textOf(clickable).slice(0, 250),
-        directUrl: rawUrl(clickable) || rawUrl(node),
-        score,
-        top: Math.round(r.top),
-        left: Math.round(r.left)
+      out.push({
+        id,
+        text: t,
+        href,
+        className: cls,
+        score: String(score),
+        top: String(Math.round(r.top)),
+        left: String(Math.round(r.left)),
+        width: String(Math.round(r.width)),
+        height: String(Math.round(r.height))
       });
     }
 
-    const seen = new Set();
-    return candidates
-      .sort((a,b) => b.score - a.score || a.top - b.top || a.left - b.left)
-      .filter(c => {
-        if (!c.path || seen.has(c.path)) return false;
-        seen.add(c.path);
-        return true;
-      })
-      .slice(0, 10);
+    return out.sort((a,b) => Number(b.score)-Number(a.score) || Number(a.top)-Number(b.top));
     """
     try:
-        return driver.execute_script(js) or []
-    except Exception:
+        rows = driver.execute_script(js) or []
+    except Exception as exc:
+        print(f"Exact Attachment anchor scan failed: {exc}")
         return []
 
+    if rows:
+        print(f"Exact Attachment <a> links found: {len(rows)}")
+        for row in rows[:4]:
+            print(
+                "  exact anchor -> "
+                f"id={row.get('id')} text={row.get('text')!r} "
+                f"rect=({row.get('left')},{row.get('top')},"
+                f"{row.get('width')}x{row.get('height')})"
+            )
+    return rows
 
-def _close_extra_tabs_and_restore(driver: webdriver.Chrome, app_handle: str) -> None:
+
+def get_anchor_element(driver, anchor: Dict[str, str]):
+    anchor_id = clean(anchor.get("id"))
+    href = clean(anchor.get("href"))
+
+    if anchor_id:
+        try:
+            element = driver.execute_script(
+                "return document.getElementById(arguments[0]);", anchor_id
+            )
+            if element is not None:
+                return element
+        except Exception:
+            pass
+
+    if href:
+        try:
+            element = driver.execute_script(
+                """
+                const wanted = arguments[0];
+                return Array.from(document.querySelectorAll('a[href]')).find(a => {
+                  try { return new URL(a.href, location.href).href === wanted; }
+                  catch(e) { return false; }
+                }) || null;
+                """,
+                href,
+            )
+            if element is not None:
+                return element
+        except Exception:
+            pass
+    return None
+
+
+def final_attachment_from_dom(driver) -> Optional[str]:
+    """Find a real file/document URL on the opened page, regardless of extension."""
+    js = r"""
+    function abs(u){try{return new URL(u,location.href).href}catch(e){return ''}}
+    const bad = /morelinks\.aspx|loader\.gif|dashboard\.aspx|\/login/i;
+    for(const el of document.querySelectorAll('a[href],iframe[src],frame[src],embed[src],object[data],[data-url],[data-href],[data-src]')){
+      for(const attr of ['href','src','data','data-url','data-href','data-src']){
+        const raw=el.getAttribute&&el.getAttribute(attr); if(!raw) continue;
+        const u=abs(raw);
+        if(/^https?:/i.test(u) && !bad.test(u)) return u;
+      }
+    }
+    return '';
+    """
+    try:
+        value = clean(driver.execute_script(js))
+        return value if valid_real_attachment_url(value) else None
+    except Exception:
+        return None
+
+
+def close_extra_tabs(driver, app_handle: str) -> None:
     try:
         for handle in list(driver.window_handles):
             if handle == app_handle:
@@ -322,137 +448,272 @@ def _close_extra_tabs_and_restore(driver: webdriver.Chrome, app_handle: str) -> 
         pass
 
 
-def repaired_get_pdf_url_from_attachment(
-    driver: webdriver.Chrome,
-    target: Dict[str, str],
-    app_handle: str,
+def right_click_open_link_in_new_tab(
+    driver, app_handle: str, anchor: Dict[str, str]
 ) -> Optional[str]:
-    direct = target.get("directUrl") or target.get("directPdf") or ""
-    if looks_like_attachment_url(direct):
-        absolute = urljoin(driver.current_url, direct)
-        print(f"Direct attachment URL found in element: {absolute}")
-        return absolute
-
-    before_url = driver.current_url
-    before_tabs = set(driver.window_handles)
-    drain_performance_log(driver)
-
-    path = target.get("path", "")
-    clicked = base.click_path_human(driver, path)
-    if not clicked:
-        # Original helper has a JS click fallback and useful logging.
-        clicked = base.click_path(driver, path)
-    if not clicked:
-        print("Attachment control found but click failed.")
+    """Right-click exact Attachment anchor, open it in a new tab and copy final URL."""
+    element = get_anchor_element(driver, anchor)
+    if element is None:
+        print("Exact Attachment anchor element disappeared before right-click")
         return None
 
-    deadline = time.time() + 8.0
-    observed_url: Optional[str] = None
+    try:
+        driver.execute_script(
+            "arguments[0].scrollIntoView({block:'center',inline:'center'});", element
+        )
+        time.sleep(0.15)
+    except Exception:
+        pass
+
+    print(
+        "Right-clicking exact Attachment link -> "
+        f"id={anchor.get('id')} text={anchor.get('text')!r}"
+    )
+
+    try:
+        ActionChains(driver).move_to_element(element).context_click(element).perform()
+        time.sleep(0.25)
+        try:
+            ActionChains(driver).send_keys(Keys.ESCAPE).perform()
+        except Exception:
+            pass
+    except Exception as exc:
+        print(f"Native context click fallback: {str(exc)[:120]}")
+        try:
+            driver.execute_script(
+                """
+                arguments[0].dispatchEvent(new MouseEvent('contextmenu', {
+                  bubbles:true,cancelable:true,view:window,button:2,buttons:2
+                }));
+                """,
+                element,
+            )
+        except Exception:
+            return None
+
+    try:
+        href = clean(element.get_attribute("href"))
+    except Exception:
+        href = clean(anchor.get("href"))
+
+    if not valid_real_attachment_url(href):
+        print(f"Rejected Attachment href before opening new tab: {href}")
+        return None
+
+    print("Open link in new tab: exact Attachment href")
+
+    try:
+        driver.switch_to.new_window("tab")
+        attachment_tab = driver.current_window_handle
+        drain_performance_log(driver)
+        driver.get(href)
+    except Exception as exc:
+        print(f"Could not open Attachment href in new tab: {str(exc)[:150]}")
+        close_extra_tabs(driver, app_handle)
+        return None
+
+    deadline = time.time() + 12.0
+    observed: Set[str] = set()
+    first_real_seen_at: Optional[float] = None
+    last_real_url: Optional[str] = None
 
     while time.time() < deadline:
-        # Network/download events are the most reliable source for ASP.NET downloads.
-        captured = attachment_url_from_performance(driver)
-        if captured:
-            observed_url = captured
-            break
-
         try:
-            now_tabs = set(driver.window_handles)
-            new_tabs = list(now_tabs - before_tabs)
-            if new_tabs:
-                driver.switch_to.window(new_tabs[-1])
-                time.sleep(0.35)
-                candidate = driver.current_url
-                if looks_like_attachment_url(candidate):
-                    observed_url = candidate
-                    break
-                page_pdf = base.extract_pdf_from_current_page(driver)
-                if page_pdf:
-                    observed_url = page_pdf
-                    break
-                driver.switch_to.window(app_handle)
+            driver.switch_to.window(attachment_tab)
+            current = clean(driver.current_url)
+            if current and current not in observed:
+                observed.add(current)
+                print(f"New-tab URL observed: {current}")
 
-            driver.switch_to.window(app_handle)
-            current = driver.current_url
-            if current != before_url and looks_like_attachment_url(current):
-                observed_url = current
-                break
+            if valid_real_attachment_url(current):
+                last_real_url = current
+                if first_real_seen_at is None:
+                    first_real_seen_at = time.time()
+                if time.time() - first_real_seen_at >= 0.8:
+                    print(f"FINAL attachment URL copied from new tab: {last_real_url}")
+                    close_extra_tabs(driver, app_handle)
+                    return last_real_url
 
-            page_pdf = base.extract_pdf_from_current_page(driver)
-            if page_pdf:
-                observed_url = page_pdf
-                break
+            dom_url = final_attachment_from_dom(driver)
+            if dom_url and dom_url != current:
+                last_real_url = dom_url
+                if first_real_seen_at is None:
+                    first_real_seen_at = time.time()
         except WebDriverException:
             pass
 
-        time.sleep(0.25)
+        try:
+            captured = attachment_url_from_performance(driver)
+        except Exception:
+            captured = None
+        if valid_real_attachment_url(captured):
+            last_real_url = clean(captured)
+            if first_real_seen_at is None:
+                first_real_seen_at = time.time()
 
-    # One last log drain catches a download event arriving near the timeout.
-    if not observed_url:
-        observed_url = attachment_url_from_performance(driver)
+        time.sleep(0.2)
 
-    _close_extra_tabs_and_restore(driver, app_handle)
+    if last_real_url and valid_real_attachment_url(last_real_url):
+        print(f"FINAL attachment URL copied after wait: {last_real_url}")
+        close_extra_tabs(driver, app_handle)
+        return last_real_url
 
-    if observed_url:
-        print(f"Real PDF/download URL extracted: {observed_url}")
-        return observed_url
+    if valid_real_attachment_url(href):
+        print(f"Using exact opened Attachment link: {href}")
+        close_extra_tabs(driver, app_handle)
+        return href
 
-    print("Attachment was clicked but no downloadable PDF URL was captured.")
+    print("Attachment opened, but no valid real URL was captured; skipping.")
+    for value in sorted(observed):
+        print(f"  observed intermediate: {value}")
+    close_extra_tabs(driver, app_handle)
     return None
 
 
-def repaired_extract_pdf_from_current_message_detail(
-    driver: webdriver.Chrome,
-    app_handle: str,
-) -> Optional[str]:
-    # First preserve the old direct .pdf detection.
-    direct = base.extract_pdf_from_current_page(driver)
-    if direct:
-        return direct
-
-    targets = find_attachment_targets(driver)
-    if not targets:
-        # Keep the old detector as a last fallback.
-        old_target = base.visible_attachment_target(driver, set())
-        if old_target:
-            targets = [old_target]
-
-    if not targets:
-        print("No attachment control detected on message detail page.")
+def extract_attachment_url(driver, app_handle: str) -> Optional[str]:
+    """Only exact Attachment anchors are eligible; file extension is irrelevant."""
+    anchors = exact_attachment_anchors(driver)
+    if not anchors:
+        print("No exact Attachment <a> link found in this message")
         return None
 
-    detail_url = driver.current_url
-    print(f"Attachment controls detected: {len(targets)}")
+    for index, anchor in enumerate(anchors, start=1):
+        print(f"Trying exact Attachment anchor {index}/{len(anchors)}")
+        result = right_click_open_link_in_new_tab(driver, app_handle, anchor)
+        if result and valid_real_attachment_url(result):
+            print(f"Verified uploadable attachment link: {result}")
+            return result
 
-    for index, target in enumerate(targets, start=1):
-        print(
-            f"Trying attachment control {index}/{len(targets)}: "
-            f"{target.get('text', '')[:120]!r}"
-        )
-        url = repaired_get_pdf_url_from_attachment(driver, target, app_handle)
-        if url:
-            return url
+    print("Exact Attachment link(s) found, but none produced a usable URL")
+    return None
 
-        # If a failed click navigated away, reopen the message detail before the next target.
+
+# ---------------------------------------------------------------------------
+# Website-first strict date boundary repair
+# ---------------------------------------------------------------------------
+
+class _WebsiteBoundaryDate(date):
+    """Internally latest+1 while logs display the actual website latest date."""
+
+    def __new__(cls, internal_date: date, displayed_date: date):
+        obj = date.__new__(cls, internal_date.year, internal_date.month, internal_date.day)
+        obj._displayed_date = displayed_date
+        return obj
+
+    def isoformat(self) -> str:
+        return self._displayed_date.isoformat()
+
+
+def parse_website_added_dates(text: str) -> List[date]:
+    raw = clean(text)
+    found: List[date] = []
+    pattern = re.compile(
+        r"\bADDED\s+([A-Z][A-Za-z]{2,8})\s+(\d{1,2}),\s+(\d{4})\b",
+        re.I,
+    )
+
+    for month, day, year in pattern.findall(raw):
+        parsed: Optional[date] = None
+        for fmt in ("%b %d %Y", "%B %d %Y"):
+            try:
+                parsed = datetime.strptime(f"{month} {day} {year}", fmt).date()
+                break
+            except ValueError:
+                pass
+        if parsed:
+            found.append(parsed)
+    return found
+
+
+def read_latest_date_from_website() -> Optional[date]:
+    """First action: open 8aPDF and read the latest displayed material date."""
+    driver = runner.legacy.make_driver()
+    try:
+        print("=== STEP 0: CHECKING 8aPDF WEBSITE LATEST PDF DATE ===")
+        print(f"Opening website first: {WEBSITE_URL}")
+        driver.get(WEBSITE_URL)
+        runner.legacy.wait_ready(driver)
+        time.sleep(1.8)
+
+        body_text = ""
         try:
-            driver.switch_to.window(app_handle)
-            if driver.current_url != detail_url:
-                driver.get(detail_url)
-                base.wait_ready(driver)
-                time.sleep(0.7)
+            body_text = driver.execute_script(
+                "return (document.body && document.body.innerText) || '';"
+            ) or ""
         except Exception:
             pass
 
-    return None
+        dates = parse_website_added_dates(body_text)
+        if dates:
+            latest = max(dates)
+            print(f"Latest PDF date found on website: {latest.isoformat()}")
+            print(
+                "STRICT RULE LOCKED: only EduSecure attachments with a message date "
+                f"AFTER {latest.isoformat()} can be uploaded. Same-date and older are skipped."
+            )
+            return latest
+
+        try:
+            latest = runner.legacy.latest_library_date(driver)
+        except Exception:
+            latest = None
+
+        if latest:
+            print(f"Latest PDF date found by fallback reader: {latest.isoformat()}")
+            print(
+                "STRICT RULE LOCKED: only EduSecure attachments with a message date "
+                f"AFTER {latest.isoformat()} can be uploaded. Same-date and older are skipped."
+            )
+            return latest
+
+        print("ERROR: Could not read the latest PDF date from the 8aPDF website.")
+        return None
+    finally:
+        try:
+            driver.quit()
+        except Exception:
+            pass
 
 
-# Patch the existing module at runtime. All global lookups inside sync.py then use
-# these repaired implementations, including main()'s final PDF validation.
-base.make_driver = make_driver_with_network_logs
-base.is_pdf_url = repaired_is_pdf_url
-base.get_pdf_url_from_attachment = repaired_get_pdf_url_from_attachment
-base.extract_pdf_from_current_message_detail = repaired_extract_pdf_from_current_message_detail
+def existing_state_from_website(materials: List[Dict[str, Any]]):
+    """Use Firestore for duplicate URLs/order, but website date for the cutoff."""
+    urls, _firestore_latest, next_order = ORIGINAL_EXISTING_STATE(materials)
+
+    if WEBSITE_LATEST_DATE is None:
+        raise RuntimeError("Website latest PDF date was not established before EduSecure sync")
+
+    effective = _WebsiteBoundaryDate(
+        WEBSITE_LATEST_DATE + timedelta(days=1),
+        WEBSITE_LATEST_DATE,
+    )
+
+    print(f"Website cutoff date being used: {WEBSITE_LATEST_DATE.isoformat()}")
+    print("Same-date and older EduSecure messages are NOT eligible for upload.")
+    return urls, effective, next_order
+
+
+# Install all consolidated runtime repairs before main() starts.
+runner.list_firestore_materials = list_and_cleanup_materials
+runner.extract_attachment_url = extract_attachment_url
+runner.legacy.make_title = make_message_title
+runner.legacy.make_driver = make_driver_with_network_logs
+runner.legacy.is_pdf_url = valid_real_attachment_url
+
+
+def main() -> int:
+    global WEBSITE_LATEST_DATE
+
+    WEBSITE_LATEST_DATE = read_latest_date_from_website()
+    if WEBSITE_LATEST_DATE is None:
+        print(
+            "Stopping safely: website latest date could not be read, "
+            "so no EduSecure upload will run."
+        )
+        return 2
+
+    runner.existing_state = existing_state_from_website
+    return runner.main()
 
 
 if __name__ == "__main__":
-    base.main()
+    sys.exit(main())
