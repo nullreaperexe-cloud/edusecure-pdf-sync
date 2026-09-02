@@ -43,7 +43,7 @@ def clean(value: Any) -> str:
 
 
 # ---------------------------------------------------------------------------
-# Title repair
+# Title + subject intelligence repair
 # ---------------------------------------------------------------------------
 
 def make_message_title(text: str, pdf_url: str, number: int = 0) -> str:
@@ -80,6 +80,187 @@ def make_message_title(text: str, pdf_url: str, number: int = 0) -> str:
         candidate = candidate[:125].rsplit(" ", 1)[0]
 
     return candidate or f"PDF {number}".strip()
+
+
+SUBJECT_ALIASES = {
+    "math": "Mathematics",
+    "maths": "Mathematics",
+    "mathematics": "Mathematics",
+    "science": "Science",
+    "physics": "Science",
+    "chemistry": "Science",
+    "biology": "Science",
+    "english": "English",
+    "hindi": "Hindi",
+    "punjabi": "Punjabi",
+    "french": "French",
+    "sanskrit": "Sanskrit",
+    "computer": "Computer",
+    "computer science": "Computer",
+    "ict": "Computer",
+    "artificial intelligence": "Artificial Intelligence",
+    "ai": "Artificial Intelligence",
+    "iot": "IoT",
+    "internet of things": "IoT",
+    "social science": "Social Science",
+    "social studies": "Social Science",
+    "sst": "Social Science",
+    "history": "Social Science",
+    "geography": "Social Science",
+    "civics": "Social Science",
+    "political science": "Social Science",
+    "general knowledge": "GK",
+    "gk": "GK",
+    "evs": "EVS",
+    "environmental studies": "EVS",
+    "moral science": "Moral Science",
+    "value education": "Moral Science",
+    "physical education": "Physical Education",
+    "pe": "Physical Education",
+    "art": "Art",
+    "music": "Music",
+}
+
+EXPLICIT_SUBJECT_RE = re.compile(
+    r"\b(Artificial\s+Intelligence|Internet\s+of\s+Things|Computer\s+Science|"
+    r"Political\s+Science|Social\s+Science|Social\s+Studies|Environmental\s+Studies|"
+    r"General\s+Knowledge|Moral\s+Science|Value\s+Education|Physical\s+Education|"
+    r"Mathematics|Maths|Math|Science|Physics|Chemistry|Biology|English|Hindi|Punjabi|"
+    r"French|Sanskrit|Computer|ICT|AI|IoT|SST|History|Geography|Civics|GK|EVS|Art|Music|PE)\b",
+    re.I,
+)
+
+
+def _canonical_subject(value: str) -> Optional[str]:
+    key = clean(value).lower()
+    return SUBJECT_ALIASES.get(key)
+
+
+def detect_subject_smart(text: str, default: str = "General") -> str:
+    """Identify the academic subject; message type is never treated as a subject.
+
+    Priority:
+    1. Explicit subject names/labels from EduSecure.
+    2. Native-script signals (Gurmukhi, Sanskrit markers, Devanagari).
+    3. Strong academic vocabulary scoring.
+    4. Circular for real notices/circulars, otherwise General.
+    """
+    raw = clean(text)
+    if not raw:
+        return default
+
+    # First inspect explicit subject labels such as "Subject: Hindi" or
+    # "Home Work : Mathematics : ...". This is the highest-confidence signal.
+    labeled_patterns = (
+        r"(?:Subject|Sub)\s*[:\-]\s*([^:|\n]{2,40})",
+        r"Home\s*Work\s*:\s*([^:|\n]{2,40})\s*:",
+        r"Class\s*Work\s*:\s*([^:|\n]{2,40})\s*:",
+    )
+    for pattern in labeled_patterns:
+        match = re.search(pattern, raw, flags=re.I)
+        if not match:
+            continue
+        named = EXPLICIT_SUBJECT_RE.search(match.group(1))
+        if named:
+            canonical = _canonical_subject(named.group(1))
+            if canonical:
+                return canonical
+
+    # Any explicit subject word anywhere is strong evidence. Longer/specialized
+    # names are intentionally checked by the regex before short aliases.
+    named = EXPLICIT_SUBJECT_RE.search(raw)
+    if named:
+        canonical = _canonical_subject(named.group(1))
+        if canonical:
+            return canonical
+
+    # Native scripts: Gurmukhi is a strong Punjabi signal.
+    if re.search(r"[\u0A00-\u0A7F]", raw):
+        return "Punjabi"
+
+    # Detect Sanskrit before generic Devanagari/Hindi. Keep this conservative so
+    # normal Hindi grammar words do not get mislabeled as Sanskrit.
+    if re.search(
+        r"(?:संस्कृत(?:म्)?|श्लोक(?:ः|म्)?|सुभाषित|धातुरूप|शब्दरूप|संस्कृत\s*व्याकरण)",
+        raw,
+        flags=re.I,
+    ):
+        return "Sanskrit"
+
+    # Devanagari content without a Sanskrit-specific signal is Hindi for this
+    # school workflow. Example: "संबंधित पीडीएफ प्राप्त करें।" -> Hindi.
+    if re.search(r"[\u0900-\u097F]", raw):
+        return "Hindi"
+
+    lower = raw.lower()
+    scores: Dict[str, int] = {}
+
+    def add(subject: str, points: int) -> None:
+        scores[subject] = scores.get(subject, 0) + points
+
+    keyword_rules = {
+        "Mathematics": (
+            r"\balgebra\b|\bgeometry\b|\barithmetic\b|\bfraction(?:s)?\b|\bdecimal(?:s)?\b|"
+            r"\binteger(?:s)?\b|\brational\s+number(?:s)?\b|\blinear\s+equation(?:s)?\b|"
+            r"\bmensuration\b|\bpercentage(?:s)?\b|\bratio\b|\bproportion\b|\bexponent(?:s)?\b",
+            5,
+        ),
+        "Science": (
+            r"\bforce\b|\bfriction\b|\bcell(?:s)?\b|\bmicroorganism(?:s)?\b|\bcombustion\b|"
+            r"\bphotosynthesis\b|\becosystem\b|\bmetals?\b|\bnon[- ]?metals?\b|\breproduction\b|"
+            r"\bchemical\s+reaction(?:s)?\b|\belectric(?:ity|\s+current)\b|\blight\b|\bsound\b",
+            4,
+        ),
+        "Social Science": (
+            r"\bconstitution\b|\bparliament\b|\bjudiciary\b|\bdemocracy\b|\bcolonial(?:ism)?\b|"
+            r"\bresources?\b|\bagriculture\b|\bindustries\b|\bcivil\s+rights\b|\bmap\s+work\b",
+            4,
+        ),
+        "Computer": (
+            r"\bcomputer\b|\bcoding\b|\bprogramming\b|\bpython\b|\bhtml\b|\bcss\b|\bjavascript\b|"
+            r"\bspreadsheet\b|\bms\s+excel\b|\bpowerpoint\b|\bdatabase\b|\bcybersecurity\b|\bnetworking\b",
+            5,
+        ),
+        "Artificial Intelligence": (
+            r"\bartificial\s+intelligence\b|\bmachine\s+learning\b|\bneural\s+network(?:s)?\b|"
+            r"\bchatbot(?:s)?\b|\bcomputer\s+vision\b|\bnatural\s+language\s+processing\b",
+            7,
+        ),
+        "IoT": (
+            r"\binternet\s+of\s+things\b|\biot\b|\bsmart\s+device(?:s)?\b|\bsensor(?:s)?\b|"
+            r"\bconnected\s+device(?:s)?\b",
+            7,
+        ),
+        "French": (
+            r"\bfrench\b|\bfrançais(?:e)?\b|\bcompréhension\b|\bconjugaison\b|\bgrammaire\b|"
+            r"\bvocabulaire\b|\bbonjour\b|\bunseen\s+passage\s+in\s+french\b",
+            7,
+        ),
+        "English": (
+            r"\benglish\s+grammar\b|\benglish\s+literature\b|\breading\s+comprehension\b|"
+            r"\bcreative\s+writing\b|\bnotice\s+writing\b|\bletter\s+writing\b|\bpoem\b|\bprose\b",
+            5,
+        ),
+        "GK": (r"\bgeneral\s+knowledge\b|\bcurrent\s+affairs\b", 6),
+        "EVS": (r"\benvironmental\s+studies\b|\benvironmental\s+science\b|\bevs\b", 6),
+    }
+
+    for subject, (pattern, points) in keyword_rules.items():
+        hits = len(re.findall(pattern, lower, flags=re.I))
+        if hits:
+            add(subject, min(points * hits, points + 6))
+
+    if scores:
+        ranked = sorted(scores.items(), key=lambda pair: pair[1], reverse=True)
+        best_subject, best_score = ranked[0]
+        second_score = ranked[1][1] if len(ranked) > 1 else 0
+        if best_score >= 4 and best_score >= second_score + 1:
+            return best_subject
+
+    # School Diary is a MESSAGE TYPE, never an academic subject.
+    if re.search(r"\b(?:Circular|Announcement|Notice)\b", raw, flags=re.I):
+        return "Circular"
+    return default
 
 
 # ---------------------------------------------------------------------------
@@ -260,7 +441,7 @@ def attachment_url_from_performance(driver) -> Optional[str]:
 
 
 # ---------------------------------------------------------------------------
-# Firestore cleanup repair
+# Firestore cleanup + previous wrong-subject repair
 # ---------------------------------------------------------------------------
 
 def firestore_delete_document(document_name: str, id_token: str) -> bool:
@@ -275,11 +456,29 @@ def firestore_delete_document(document_name: str, id_token: str) -> bool:
     return response.ok or response.status_code == 404
 
 
+def firestore_update_subject(document_name: str, subject: str, id_token: str) -> bool:
+    """Patch only the subject field of an existing Firestore material."""
+    if not document_name or not subject:
+        return False
+    response = requests.patch(
+        f"https://firestore.googleapis.com/v1/{document_name}",
+        params={
+            "key": runner.FIREBASE_API_KEY,
+            "updateMask.fieldPaths": "subject",
+        },
+        headers=runner.firestore_headers(id_token),
+        json={"fields": {"subject": {"stringValue": subject}}},
+        timeout=25,
+    )
+    return response.ok
+
+
 def list_and_cleanup_materials(id_token: str) -> List[Dict[str, Any]]:
-    """Remove only known-bad intermediate URLs created by this automation."""
+    """Clean known-bad URLs and repair old 'School Diary' subject mistakes."""
     materials = ORIGINAL_LIST(id_token)
     kept: List[Dict[str, Any]] = []
     removed = 0
+    subjects_fixed = 0
 
     for item in materials:
         url = clean(item.get("pdf_url"))
@@ -293,10 +492,28 @@ def list_and_cleanup_materials(id_token: str) -> List[Dict[str, Any]]:
                 removed += 1
                 print(f"Removed invalid previous EduSecure automation URL: {url}")
                 continue
+
+        old_subject = clean(item.get("subject"))
+        if "edusecure" in source and old_subject.lower() == "school diary":
+            evidence = " ".join(
+                part for part in (
+                    clean(item.get("title")),
+                    clean(item.get("description")),
+                ) if part
+            )
+            corrected = detect_subject_smart(evidence)
+            if corrected not in {"General", "Circular", "School Diary"}:
+                if firestore_update_subject(clean(item.get("_name")), corrected, id_token):
+                    item["subject"] = corrected
+                    subjects_fixed += 1
+                    print(f"Corrected existing subject: School Diary -> {corrected} | {evidence[:100]}")
+
         kept.append(item)
 
     if removed:
         print(f"Invalid previous EduSecure automation records cleaned: {removed}")
+    if subjects_fixed:
+        print(f"Existing wrong School Diary subjects corrected: {subjects_fixed}")
     return kept
 
 
@@ -696,6 +913,7 @@ def existing_state_from_website(materials: List[Dict[str, Any]]):
 runner.list_firestore_materials = list_and_cleanup_materials
 runner.extract_attachment_url = extract_attachment_url
 runner.legacy.make_title = make_message_title
+runner.legacy.detect_subject = detect_subject_smart
 runner.legacy.make_driver = make_driver_with_network_logs
 runner.legacy.is_pdf_url = valid_real_attachment_url
 
