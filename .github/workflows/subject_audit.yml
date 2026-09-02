@@ -42,10 +42,11 @@ jobs:
           id_token = runner.firebase_sign_in()
           materials = runner.list_firestore_materials(id_token)
 
+          # Artificial Intelligence belongs to Computer in this library.
           academic = {
               "Mathematics", "Science", "English", "Hindi", "Punjabi", "French",
-              "Sanskrit", "Computer", "Artificial Intelligence", "IoT", "Social Science",
-              "GK", "EVS", "Moral Science", "Physical Education", "Art", "Music"
+              "Sanskrit", "Computer", "IoT", "Social Science", "GK", "EVS",
+              "Moral Science", "Physical Education", "Art", "Music"
           }
           invalid_types = {
               "", "school diary", "message", "announcement", "notice", "pdf material",
@@ -55,13 +56,16 @@ jobs:
           def clean(v):
               return runner.clean(v)
 
+          def canonical(v):
+              return runner.normalize_subject_name(v)
+
           def strong_subject(text):
               raw = clean(text)
               named = sync_repair.EXPLICIT_SUBJECT_RE.search(raw)
               if named:
                   value = sync_repair._canonical_subject(named.group(1))
                   if value:
-                      return value
+                      return canonical(value)
               if re.search(r"[\u0A00-\u0A7F]", raw):
                   return "Punjabi"
               if re.search(r"(?:संस्कृत(?:म्)?|श्लोक(?:ः|म्)?|सुभाषित|धातुरूप|शब्दरूप|संस्कृत\s*व्याकरण)", raw, flags=re.I):
@@ -85,17 +89,18 @@ jobs:
           skipped_ambiguous = 0
 
           print(f"FULL SUBJECT AUDIT: {len(materials)} library records loaded")
+          print("SUBJECT POLICY: Artificial Intelligence / AI = Computer")
 
           for item in materials:
               scanned += 1
               title = clean(item.get("title"))
               description = clean(item.get("description"))
-              current = clean(item.get("subject"))
+              current = canonical(clean(item.get("subject")))
               current_key = current.lower()
               evidence = " ".join(x for x in (title, description) if x)
 
-              inferred = sync_repair.detect_subject_smart(evidence, default="General")
-              strong = strong_subject(evidence)
+              inferred = canonical(sync_repair.detect_subject_smart(evidence, default="General"))
+              strong = canonical(strong_subject(evidence)) if strong_subject(evidence) else None
               target = None
 
               # Strong content/script evidence may correct even an existing academic label.
