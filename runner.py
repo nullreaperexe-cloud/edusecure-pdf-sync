@@ -33,6 +33,18 @@ def clean(value: Any) -> str:
     return legacy.clean_text(str(value or ""))
 
 
+def normalize_subject_name(value: Any) -> str:
+    """Apply the website's canonical subject policy.
+
+    Artificial Intelligence is part of the Computer subject for this library,
+    so AI/Artificial Intelligence must never become a separate subject card.
+    """
+    subject = clean(value)
+    if subject.lower() in {"artificial intelligence", "ai"}:
+        return "Computer"
+    return subject
+
+
 def parse_date_text(text: str) -> Optional[date]:
     text = clean(text)
     patterns = [
@@ -80,10 +92,28 @@ def decode_value(value: Dict[str, Any]) -> Any:
     return None
 
 
+def patch_subject(document_name: str, subject: str, id_token: str) -> bool:
+    """Patch only the subject field of one existing Firestore material."""
+    if not document_name or not subject:
+        return False
+    response = requests.patch(
+        f"https://firestore.googleapis.com/v1/{document_name}",
+        params={
+            "key": FIREBASE_API_KEY,
+            "updateMask.fieldPaths": "subject",
+        },
+        headers=firestore_headers(id_token),
+        json={"fields": {"subject": {"stringValue": subject}}},
+        timeout=25,
+    )
+    return response.ok
+
+
 def list_firestore_materials(id_token: str) -> list[Dict[str, Any]]:
     base = f"https://firestore.googleapis.com/v1/projects/{FIREBASE_PROJECT_ID}/databases/(default)/documents/study_materials"
     params: Dict[str, Any] = {"pageSize": 1000, "key": FIREBASE_API_KEY}
     docs: list[Dict[str, Any]] = []
+    ai_subjects_fixed = 0
     while True:
         response = requests.get(base, params=params, headers=firestore_headers(id_token), timeout=30)
         if response.status_code == 404:
@@ -93,11 +123,25 @@ def list_firestore_materials(id_token: str) -> list[Dict[str, Any]]:
         for raw in body.get("documents", []):
             fields = {k: decode_value(v) for k, v in (raw.get("fields") or {}).items()}
             fields["_name"] = raw.get("name", "")
+
+            old_subject = clean(fields.get("subject"))
+            canonical_subject = normalize_subject_name(old_subject)
+            if canonical_subject == "Computer" and old_subject.lower() in {"artificial intelligence", "ai"}:
+                if patch_subject(fields["_name"], "Computer", id_token):
+                    fields["subject"] = "Computer"
+                    ai_subjects_fixed += 1
+                    print(f"Corrected existing subject: {old_subject} -> Computer")
+                else:
+                    print(f"Could not correct existing AI subject for {fields['_name']}")
+
             docs.append(fields)
         token = body.get("nextPageToken")
         if not token:
             break
         params["pageToken"] = token
+
+    if ai_subjects_fixed:
+        print(f"Existing Artificial Intelligence subjects merged into Computer: {ai_subjects_fixed}")
     return docs
 
 
@@ -135,9 +179,10 @@ def existing_state(materials: list[Dict[str, Any]]) -> tuple[Set[str], Optional[
 def fs_fields(item: Dict[str, str], source_date: date, order: int) -> Dict[str, Any]:
     now = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
     source_ts = datetime(source_date.year, source_date.month, source_date.day, tzinfo=timezone.utc).isoformat().replace("+00:00", "Z")
+    subject = normalize_subject_name(item.get("subject")) or "Circular"
     return {
         "title": {"stringValue": clean(item.get("title"))},
-        "subject": {"stringValue": clean(item.get("subject")) or "Circular"},
+        "subject": {"stringValue": subject},
         "description": {"stringValue": clean(item.get("description")) or clean(item.get("title"))},
         "pdf_url": {"stringValue": clean(item.get("url"))},
         "source": {"stringValue": "EduSecure GitHub Sync"},
@@ -405,7 +450,7 @@ def main() -> int:
             extracted_title = legacy.make_title(detail_text or message_text, pdf_url, len(report["uploaded"]) + 1)
             item = {
                 "title": extracted_title,
-                "subject": legacy.detect_subject(detail_text or message_text),
+                "subject": normalize_subject_name(legacy.detect_subject(detail_text or message_text)),
                 "description": extracted_title,
                 "url": pdf_url,
             }
