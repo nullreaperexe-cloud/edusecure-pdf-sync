@@ -1,0 +1,131 @@
+name: Full Subject Audit
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+    paths:
+      - ".github/workflows/subject_audit.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  audit-subjects:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v5
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install dependencies
+        run: python -m pip install -r requirements.txt
+
+      - name: Audit and repair all existing subjects
+        env:
+          PYTHONUNBUFFERED: "1"
+          FIREBASE_ADMIN_PASSWORD: ${{ secrets.FIREBASE_ADMIN_PASSWORD }}
+        run: |
+          python - <<'PY'
+          import re
+          import requests
+          import runner
+          import sync_repair
+
+          id_token = runner.firebase_sign_in()
+          materials = runner.list_firestore_materials(id_token)
+
+          academic = {
+              "Mathematics", "Science", "English", "Hindi", "Punjabi", "French",
+              "Sanskrit", "Computer", "Artificial Intelligence", "IoT", "Social Science",
+              "GK", "EVS", "Moral Science", "Physical Education", "Art", "Music"
+          }
+          invalid_types = {
+              "", "school diary", "message", "announcement", "notice", "pdf material",
+              "study material", "home work", "homework", "class work", "classwork", "general"
+          }
+
+          def clean(v):
+              return runner.clean(v)
+
+          def strong_subject(text):
+              raw = clean(text)
+              named = sync_repair.EXPLICIT_SUBJECT_RE.search(raw)
+              if named:
+                  value = sync_repair._canonical_subject(named.group(1))
+                  if value:
+                      return value
+              if re.search(r"[\u0A00-\u0A7F]", raw):
+                  return "Punjabi"
+              if re.search(r"(?:संस्कृत(?:म्)?|श्लोक(?:ः|म्)?|सुभाषित|धातुरूप|शब्दरूप|संस्कृत\s*व्याकरण)", raw, flags=re.I):
+                  return "Sanskrit"
+              if re.search(r"[\u0900-\u097F]", raw):
+                  return "Hindi"
+              return None
+
+          def patch_subject(document_name, subject):
+              response = requests.patch(
+                  f"https://firestore.googleapis.com/v1/{document_name}",
+                  params={"key": runner.FIREBASE_API_KEY, "updateMask.fieldPaths": "subject"},
+                  headers=runner.firestore_headers(id_token),
+                  json={"fields": {"subject": {"stringValue": subject}}},
+                  timeout=25,
+              )
+              return response.ok, response.status_code
+
+          scanned = 0
+          changed = 0
+          skipped_ambiguous = 0
+
+          print(f"FULL SUBJECT AUDIT: {len(materials)} library records loaded")
+
+          for item in materials:
+              scanned += 1
+              title = clean(item.get("title"))
+              description = clean(item.get("description"))
+              current = clean(item.get("subject"))
+              current_key = current.lower()
+              evidence = " ".join(x for x in (title, description) if x)
+
+              inferred = sync_repair.detect_subject_smart(evidence, default="General")
+              strong = strong_subject(evidence)
+              target = None
+
+              # Strong content/script evidence may correct even an existing academic label.
+              if strong and strong != current:
+                  target = strong
+              # For invalid/message-type/blank subjects, the smart classifier may repair them.
+              elif current_key in invalid_types:
+                  if inferred in academic or inferred == "Circular":
+                      target = inferred
+                  elif inferred == "General" and current_key not in {"", "general"}:
+                      target = "General"
+              # Unknown non-academic labels can be repaired when academic evidence is clear.
+              elif current not in academic and current != "Circular" and inferred in academic:
+                  target = inferred
+
+              if not target or target == current:
+                  if current in academic and inferred not in {current, "General"} and not strong:
+                      skipped_ambiguous += 1
+                  continue
+
+              ok, status = patch_subject(clean(item.get("_name")), target)
+              if ok:
+                  changed += 1
+                  print(f"FIXED: {current or '(blank)'} -> {target} | {title[:100]}")
+              else:
+                  print(f"FAILED HTTP {status}: {current or '(blank)'} -> {target} | {title[:100]}")
+
+          print("")
+          print("=== FULL SUBJECT AUDIT COMPLETE ===")
+          print(f"Scanned: {scanned}")
+          print(f"Subjects corrected: {changed}")
+          print(f"Ambiguous conflicts left unchanged: {skipped_ambiguous}")
+          PY
