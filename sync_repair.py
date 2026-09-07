@@ -36,10 +36,61 @@ BAD_URL_RE = re.compile(
 ORIGINAL_LIST = runner.list_firestore_materials
 ORIGINAL_EXISTING_STATE = runner.existing_state
 WEBSITE_LATEST_DATE: Optional[date] = None
+SEEN_MESSAGE_SIGNATURES: Set[str] = set()
 
 
 def clean(value: Any) -> str:
     return runner.clean(value)
+
+
+def normalize_duplicate_text(value: Any) -> str:
+    """Stable text normalization used only for duplicate protection."""
+    text = clean(value).lower()
+    text = re.sub(r"\s+", " ", text)
+    return text.strip(" -:|,.;")
+
+
+def source_date_key(value: Any) -> str:
+    raw = clean(value)
+    if not raw:
+        return ""
+    try:
+        if re.match(r"^\d{4}-\d{2}-\d{2}T", raw):
+            return datetime.fromisoformat(raw.replace("Z", "+00:00")).date().isoformat()
+    except Exception:
+        pass
+    try:
+        parsed = runner.parse_date_text(raw)
+    except Exception:
+        parsed = None
+    return parsed.isoformat() if parsed else ""
+
+
+def existing_material_duplicate_key(item: Dict[str, Any]) -> Optional[str]:
+    """Conservative identity for an EduSecure material already on the website."""
+    source = normalize_duplicate_text(item.get("source"))
+    if "edusecure" not in source:
+        return None
+
+    day = source_date_key(item.get("source_date"))
+    title = normalize_duplicate_text(item.get("title"))
+    subject = normalize_duplicate_text(item.get("subject"))
+    description = normalize_duplicate_text(item.get("description"))
+    if not day or not title:
+        return None
+    return "|".join((day, title, subject, description))
+
+
+def current_message_signature(text: str) -> str:
+    """Detect the same EduSecure message appearing twice in one sync run."""
+    value = clean(text)
+    value = re.sub(
+        r"\bAttachment(?:s)?\b|\bDownload\b|\bOpen\b|\bClick\s+Here\b",
+        " ",
+        value,
+        flags=re.I,
+    )
+    return normalize_duplicate_text(value)
 
 
 # ---------------------------------------------------------------------------
@@ -149,8 +200,6 @@ def detect_subject_smart(text: str, default: str = "General") -> str:
     if not raw:
         return default
 
-    # First inspect explicit subject labels such as "Subject: Hindi" or
-    # "Home Work : Mathematics : ...". This is the highest-confidence signal.
     labeled_patterns = (
         r"(?:Subject|Sub)\s*[:\-]\s*([^:|\n]{2,40})",
         r"Home\s*Work\s*:\s*([^:|\n]{2,40})\s*:",
@@ -166,20 +215,15 @@ def detect_subject_smart(text: str, default: str = "General") -> str:
             if canonical:
                 return canonical
 
-    # Any explicit subject word anywhere is strong evidence. Longer/specialized
-    # names are intentionally checked by the regex before short aliases.
     named = EXPLICIT_SUBJECT_RE.search(raw)
     if named:
         canonical = _canonical_subject(named.group(1))
         if canonical:
             return canonical
 
-    # Native scripts: Gurmukhi is a strong Punjabi signal.
     if re.search(r"[\u0A00-\u0A7F]", raw):
         return "Punjabi"
 
-    # Detect Sanskrit before generic Devanagari/Hindi. Keep this conservative so
-    # normal Hindi grammar words do not get mislabeled as Sanskrit.
     if re.search(
         r"(?:संस्कृत(?:म्)?|श्लोक(?:ः|म्)?|सुभाषित|धातुरूप|शब्दरूप|संस्कृत\s*व्याकरण)",
         raw,
@@ -187,8 +231,6 @@ def detect_subject_smart(text: str, default: str = "General") -> str:
     ):
         return "Sanskrit"
 
-    # Devanagari content without a Sanskrit-specific signal is Hindi for this
-    # school workflow. Example: "संबंधित पीडीएफ प्राप्त करें।" -> Hindi.
     if re.search(r"[\u0900-\u097F]", raw):
         return "Hindi"
 
@@ -257,7 +299,6 @@ def detect_subject_smart(text: str, default: str = "General") -> str:
         if best_score >= 4 and best_score >= second_score + 1:
             return best_subject
 
-    # School Diary is a MESSAGE TYPE, never an academic subject.
     if re.search(r"\b(?:Circular|Announcement|Notice)\b", raw, flags=re.I):
         return "Circular"
     return default
@@ -474,7 +515,7 @@ def firestore_update_subject(document_name: str, subject: str, id_token: str) ->
 
 
 def list_and_cleanup_materials(id_token: str) -> List[Dict[str, Any]]:
-    """Clean known-bad URLs and repair old 'School Diary' subject mistakes."""
+    """Clean bad records, repair subjects, and remove duplicate EduSecure materials."""
     materials = ORIGINAL_LIST(id_token)
     kept: List[Dict[str, Any]] = []
     removed = 0
@@ -510,11 +551,50 @@ def list_and_cleanup_materials(id_token: str) -> List[Dict[str, Any]]:
 
         kept.append(item)
 
+    # Second pass: remove repeated EduSecure records already present on the site.
+    # A duplicate is confirmed by either the exact same URL or the same
+    # date+title+subject+description identity. Non-EduSecure records are untouched.
+    deduped: List[Dict[str, Any]] = []
+    seen_urls: Set[str] = set()
+    seen_identities: Set[str] = set()
+    duplicate_records_removed = 0
+
+    for item in kept:
+        source = normalize_duplicate_text(item.get("source"))
+        if "edusecure" not in source:
+            deduped.append(item)
+            continue
+
+        url_key = normalize_duplicate_text(item.get("pdf_url"))
+        identity_key = existing_material_duplicate_key(item)
+        duplicate_reason = ""
+        if url_key and url_key in seen_urls:
+            duplicate_reason = "same URL"
+        elif identity_key and identity_key in seen_identities:
+            duplicate_reason = "same date/title/subject/description"
+
+        if duplicate_reason:
+            if firestore_delete_document(clean(item.get("_name")), id_token):
+                duplicate_records_removed += 1
+                print(
+                    "Removed duplicate EduSecure website material "
+                    f"({duplicate_reason}): {clean(item.get('title'))[:120]}"
+                )
+                continue
+
+        if url_key:
+            seen_urls.add(url_key)
+        if identity_key:
+            seen_identities.add(identity_key)
+        deduped.append(item)
+
     if removed:
         print(f"Invalid previous EduSecure automation records cleaned: {removed}")
     if subjects_fixed:
         print(f"Existing wrong School Diary subjects corrected: {subjects_fixed}")
-    return kept
+    if duplicate_records_removed:
+        print(f"Existing duplicate EduSecure materials removed: {duplicate_records_removed}")
+    return deduped
 
 
 # ---------------------------------------------------------------------------
@@ -788,7 +868,18 @@ def right_click_open_link_in_new_tab(
 
 
 def extract_attachment_url(driver, app_handle: str) -> Optional[str]:
-    """Only exact Attachment anchors are eligible; file extension is irrelevant."""
+    """Extract one attachment and block the same EduSecure message twice per run."""
+    detail_text = ""
+    try:
+        detail_text = runner.legacy.app_current_text(driver)
+    except Exception:
+        pass
+    signature = current_message_signature(detail_text)
+
+    if signature and signature in SEEN_MESSAGE_SIGNATURES:
+        print("Duplicate EduSecure message/PDF detected in this run -> skip second copy")
+        return None
+
     anchors = exact_attachment_anchors(driver)
     if not anchors:
         print("No exact Attachment <a> link found in this message")
@@ -798,6 +889,8 @@ def extract_attachment_url(driver, app_handle: str) -> Optional[str]:
         print(f"Trying exact Attachment anchor {index}/{len(anchors)}")
         result = right_click_open_link_in_new_tab(driver, app_handle, anchor)
         if result and valid_real_attachment_url(result):
+            if signature:
+                SEEN_MESSAGE_SIGNATURES.add(signature)
             print(f"Verified uploadable attachment link: {result}")
             return result
 
