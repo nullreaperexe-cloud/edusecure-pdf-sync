@@ -9,6 +9,7 @@ on:
       - "runner.py"
       - "sync.py"
       - "sync_repair.py"
+      - "title_cleaner.py"
       - "requirements.txt"
       - ".github/workflows/sync.yml"
   schedule:
@@ -63,6 +64,13 @@ jobs:
             EXIT_CODE=$?
             if [ "$EXIT_CODE" -ne 0 ]; then
               echo "Check #${ITERATION} exited with code ${EXIT_CODE}. Keeping 24/7 worker alive for the next check."
+            fi
+
+            echo "Running strict EduSecure title cleanup..."
+            python title_cleaner.py
+            CLEANUP_EXIT=$?
+            if [ "$CLEANUP_EXIT" -ne 0 ]; then
+              echo "Title cleanup exited with code ${CLEANUP_EXIT}; worker will continue."
             fi
 
             NOW=$(date +%s)
