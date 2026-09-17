@@ -37,3 +37,31 @@ jobs:
           PYTHONUNBUFFERED: "1"
           FIREBASE_ADMIN_PASSWORD: ${{ secrets.FIREBASE_ADMIN_PASSWORD }}
         run: python title_cleaner.py
+
+      - name: Canonicalize stored AI subject aliases
+        env:
+          PYTHONUNBUFFERED: "1"
+          FIREBASE_ADMIN_PASSWORD: ${{ secrets.FIREBASE_ADMIN_PASSWORD }}
+        run: |
+          python - <<'PY'
+          import title_cleaner as intelligence
+
+          token = intelligence.firebase_sign_in()
+          fixed = 0
+          for item in intelligence.list_materials(token):
+              if "edusecure" not in intelligence.clean(item.get("source")).lower():
+                  continue
+              raw_subject = intelligence.clean(item.get("subject"))
+              if raw_subject.lower() not in {"ai", "artificial intelligence"}:
+                  continue
+              if intelligence.patch_material_fields(
+                  intelligence.clean(item.get("_name")),
+                  token,
+                  subject="Computer",
+              ):
+                  fixed += 1
+                  print(f"✅ SUBJECT ALIAS {raw_subject} -> Computer")
+              else:
+                  raise RuntimeError(f"Could not canonicalize subject for {item.get('_name')}")
+          print(f"AI subject aliases canonicalized: {fixed}")
+          PY
