@@ -13,6 +13,7 @@ import requests
 from selenium.common.exceptions import WebDriverException
 
 import sync as legacy
+import title_cleaner as intelligence
 
 START_URL = legacy.START_URL
 FIREBASE_PROJECT_ID = "academyvault-5d1eb"
@@ -34,15 +35,8 @@ def clean(value: Any) -> str:
 
 
 def normalize_subject_name(value: Any) -> str:
-    """Apply the website's canonical subject policy.
-
-    Artificial Intelligence is part of the Computer subject for this library,
-    so AI/Artificial Intelligence must never become a separate subject card.
-    """
-    subject = clean(value)
-    if subject.lower() in {"artificial intelligence", "ai"}:
-        return "Computer"
-    return subject
+    """Apply the website's canonical subject policy."""
+    return intelligence.normalize_subject(value)
 
 
 def parse_date_text(text: str) -> Optional[date]:
@@ -177,14 +171,16 @@ def existing_state(materials: list[Dict[str, Any]]) -> tuple[Set[str], Optional[
 
 
 def fs_fields(item: Dict[str, str], source_date: date, order: int) -> Dict[str, Any]:
+    """Final Firestore safety gate: never upload raw EduSecure UI text."""
+    safe = intelligence.finalize_material_fields(item)
     now = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
     source_ts = datetime(source_date.year, source_date.month, source_date.day, tzinfo=timezone.utc).isoformat().replace("+00:00", "Z")
-    subject = normalize_subject_name(item.get("subject")) or "Circular"
+    subject = normalize_subject_name(safe.get("subject")) or "Circular"
     return {
-        "title": {"stringValue": clean(item.get("title"))},
+        "title": {"stringValue": clean(safe.get("title"))},
         "subject": {"stringValue": subject},
-        "description": {"stringValue": clean(item.get("description")) or clean(item.get("title"))},
-        "pdf_url": {"stringValue": clean(item.get("url"))},
+        "description": {"stringValue": clean(safe.get("description")) or clean(safe.get("title"))},
+        "pdf_url": {"stringValue": clean(safe.get("url"))},
         "source": {"stringValue": "EduSecure GitHub Sync"},
         "source_date": {"timestampValue": source_ts},
         "order": {"integerValue": str(order)},
@@ -335,6 +331,18 @@ def main() -> int:
         return 2
 
     existing_urls, latest_date, next_order = existing_state(materials)
+    existing_semantic_keys: Set[str] = set()
+    for material in materials:
+        if "edusecure" not in clean(material.get("source")).lower():
+            continue
+        key = intelligence.semantic_duplicate_key(
+            material.get("source_date"),
+            material.get("title"),
+            material.get("subject"),
+        )
+        if key:
+            existing_semantic_keys.add(key)
+
     safe_cutoff = TODAY - timedelta(days=1)
     cutoff = latest_date or safe_cutoff
     if latest_date:
@@ -342,6 +350,7 @@ def main() -> int:
     else:
         print(f"No readable existing PDF date; safe cutoff retained: {safe_cutoff.isoformat()}")
     print(f"Existing PDF URLs loaded: {len(existing_urls)}")
+    print(f"Existing semantic EduSecure duplicate keys loaded: {len(existing_semantic_keys)}")
 
     report: Dict[str, Any] = {
         "cutoff": cutoff.isoformat(),
@@ -447,15 +456,37 @@ def main() -> int:
                 legacy.return_dashboard_and_restore_v25(driver, app_handle, saved_position)
                 continue
 
-            extracted_title = legacy.make_title(detail_text or message_text, pdf_url, len(report["uploaded"]) + 1)
-            item = {
-                "title": extracted_title,
-                "subject": normalize_subject_name(legacy.detect_subject(detail_text or message_text)),
-                "description": extracted_title,
-                "url": pdf_url,
-            }
+            original_evidence = [message_text, detail_text]
+            extracted_title = legacy.make_title(
+                detail_text or message_text,
+                pdf_url,
+                len(report["uploaded"]) + 1,
+            )
+            initially_detected = normalize_subject_name(
+                legacy.detect_subject(detail_text or message_text)
+            )
+            item = intelligence.finalize_material_fields(
+                {
+                    "title": extracted_title,
+                    "subject": initially_detected,
+                    "description": extracted_title,
+                    "url": pdf_url,
+                    "_evidence": original_evidence,
+                }
+            )
 
-            print("Uploading exact fields to Firestore:")
+            semantic_key = intelligence.semantic_duplicate_key(
+                msg_date,
+                item["title"],
+                item["subject"],
+            )
+            if semantic_key and semantic_key in existing_semantic_keys:
+                report["duplicates_skipped"] += 1
+                print("Semantic duplicate (date + cleaned title + subject) -> skip")
+                legacy.return_dashboard_and_restore_v25(driver, app_handle, saved_position)
+                continue
+
+            print("Uploading exact fields to Firestore after intelligence safety gate:")
             print(f"  Title: {item['title']}")
             print(f"  Subject: {item['subject']}")
             print(f"  Description: {item['description']}")
@@ -464,6 +495,8 @@ def main() -> int:
             if upload_firestore(item, msg_date, next_order, id_token):
                 report["uploaded"].append({**item, "source_date": msg_date.isoformat()})
                 existing_urls.add(normalized)
+                if semantic_key:
+                    existing_semantic_keys.add(semantic_key)
                 next_order -= 1
             else:
                 report["failures"].append(f"Firestore upload failed: {pdf_url}")
