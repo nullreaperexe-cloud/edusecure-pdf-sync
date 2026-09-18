@@ -35,4 +35,105 @@ jobs:
       - name: Clean and audit existing EduSecure records
         env:
           FIREBASE_ADMIN_PASSWORD: ${{ secrets.FIREBASE_ADMIN_PASSWORD }}
-        run: python title_cleaner.py
+          PYTHONUNBUFFERED: "1"
+        run: |
+          python - <<'PY'
+          import time
+          import requests
+          import title_cleaner as cleaner
+
+          token = cleaner.firebase_sign_in()
+          base = (
+              f"https://firestore.googleapis.com/v1/projects/{cleaner.FIREBASE_PROJECT_ID}"
+              "/databases/(default)/documents/study_materials"
+          )
+          params = {"pageSize": 1, "key": cleaner.FIREBASE_API_KEY}
+
+          auth_headers = cleaner.headers(token)
+          public_headers = {"Content-Type": "application/json"}
+
+          def probe(label, request_headers):
+              response = requests.get(
+                  base,
+                  params=params,
+                  headers=request_headers,
+                  timeout=30,
+              )
+              print(f"{label} Firestore probe: HTTP {response.status_code}")
+              if not response.ok:
+                  print(response.text[:1200])
+              return response
+
+          auth_probe = probe("Authenticated", auth_headers)
+          public_probe = None
+          if not auth_probe.ok:
+              public_probe = probe("Public", public_headers)
+
+          if auth_probe.ok:
+              read_headers = auth_headers
+              print("Using authenticated Firestore reads for full cleanup.")
+          elif public_probe is not None and public_probe.ok:
+              read_headers = public_headers
+              print("Using public Firestore reads for full cleanup; authenticated PATCH remains unchanged.")
+          else:
+              raise SystemExit("No Firestore read path is currently available.")
+
+          def list_all_materials(_token):
+              # 250 is only a per-page size, never a total limit.
+              # Every nextPageToken is followed until Firestore returns none.
+              page_params = {"pageSize": 250, "key": cleaner.FIREBASE_API_KEY}
+              materials = []
+              page_number = 0
+
+              while True:
+                  page_number += 1
+                  response = None
+                  for attempt in range(1, 9):
+                      response = requests.get(
+                          base,
+                          params=page_params,
+                          headers=read_headers,
+                          timeout=30,
+                      )
+                      if response.status_code not in {429, 500, 502, 503, 504}:
+                          break
+                      if attempt == 8:
+                          break
+                      delay = min(60, 2 ** attempt)
+                      print(
+                          f"Firestore HTTP {response.status_code} on page {page_number}; "
+                          f"retrying attempt {attempt + 1}/8 after {delay}s..."
+                      )
+                      time.sleep(delay)
+
+                  assert response is not None
+                  if not response.ok:
+                      print(response.text[:1200])
+                      response.raise_for_status()
+
+                  body = response.json()
+                  page_count = 0
+                  for raw in body.get("documents", []):
+                      fields = {
+                          key: cleaner.decode_value(value)
+                          for key, value in (raw.get("fields") or {}).items()
+                      }
+                      fields["_name"] = raw.get("name", "")
+                      materials.append(fields)
+                      page_count += 1
+
+                  print(
+                      f"Loaded page {page_number}: {page_count} records "
+                      f"(total loaded: {len(materials)})"
+                  )
+
+                  next_token = body.get("nextPageToken")
+                  if not next_token:
+                      break
+                  page_params["pageToken"] = next_token
+
+              return materials
+
+          cleaner.list_materials = list_all_materials
+          raise SystemExit(cleaner.main())
+          PY
