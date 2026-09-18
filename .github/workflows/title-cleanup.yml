@@ -36,6 +36,7 @@ jobs:
         env:
           FIREBASE_ADMIN_PASSWORD: ${{ secrets.FIREBASE_ADMIN_PASSWORD }}
           PYTHONUNBUFFERED: "1"
+          TITLE_DESCRIPTION_ONLY: "1"
         run: |
           python - <<'PY'
           import time

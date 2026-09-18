@@ -575,18 +575,26 @@ def main() -> int:
     token = firebase_sign_in()
     materials = list_materials(token)
 
+    title_description_only = clean(os.environ.get("TITLE_DESCRIPTION_ONLY")).lower() in {
+        "1", "true", "yes", "on"
+    }
+
     total_records = len(materials)
     checked = 0
     records_corrected = 0
     titles_fixed = 0
     descriptions_fixed = 0
+    subjects_fixed = 0
     unchanged = 0
     failures = 0
     oldest_checked_date = ""
     oldest_corrected_date = ""
 
     print(f"Total Firestore records loaded: {total_records}")
-    print("Starting full historical EduSecure title/description cleanup...")
+    if title_description_only:
+        print("Starting full historical EduSecure TITLE/DESCRIPTION-only cleanup...")
+    else:
+        print("Starting full historical EduSecure intelligence cleanup...")
 
     for item in materials:
         source = clean(item.get("source")).lower()
@@ -603,29 +611,33 @@ def main() -> int:
         old_subject = normalize_subject(item.get("subject"))
 
         # Reuse the SAME existing intelligence and cleaning rules.
-        # Subject is used only as cleaning context; this historical run does NOT patch it.
         evidence = [old_title, old_description]
-        cleaning_subject = detect_subject(evidence, current_subject=old_subject)
-        if cleaning_subject == "General" and old_subject in ACADEMIC_SUBJECTS:
-            cleaning_subject = old_subject
+        new_subject = detect_subject(evidence, current_subject=old_subject)
+        if new_subject == "General" and old_subject in ACADEMIC_SUBJECTS:
+            new_subject = old_subject
         if (
-            cleaning_subject == "General"
+            new_subject == "General"
             and old_subject.lower() == "circular"
             and ADMIN_WORD_RE.search(" ".join(evidence))
         ):
-            cleaning_subject = "Circular"
+            new_subject = "Circular"
 
-        new_title = sanitize_title(old_title, cleaning_subject)
+        new_title = sanitize_title(old_title, new_subject)
         new_description = sanitize_description(
             old_description or old_title,
-            cleaning_subject,
+            new_subject,
             fallback_title=new_title,
         )
 
         title_changed = new_title != old_title
         description_changed = new_description != old_description
+        subject_changed = (
+            not title_description_only
+            and bool(new_subject)
+            and new_subject != old_subject
+        )
 
-        if not title_changed and not description_changed:
+        if not title_changed and not description_changed and not subject_changed:
             unchanged += 1
         else:
             if patch_material_fields(
@@ -633,12 +645,15 @@ def main() -> int:
                 token,
                 title=new_title if title_changed else None,
                 description=new_description if description_changed else None,
+                subject=new_subject if subject_changed else None,
             ):
                 records_corrected += 1
                 if title_changed:
                     titles_fixed += 1
                 if description_changed:
                     descriptions_fixed += 1
+                if subject_changed:
+                    subjects_fixed += 1
                 if date_text and (not oldest_corrected_date or date_text < oldest_corrected_date):
                     oldest_corrected_date = date_text
 
@@ -646,11 +661,12 @@ def main() -> int:
                     "✅ CLEANED "
                     f"date={date_text or '(unknown)'} | "
                     f"title: {old_title!r} -> {new_title!r} | "
-                    f"description_changed={description_changed}"
+                    f"description_changed={description_changed} | "
+                    f"subject_changed={subject_changed}"
                 )
             else:
                 failures += 1
-                print(f"❌ Could not patch title/description: {old_title[:100]}")
+                print(f"❌ Could not patch requested fields: {old_title[:100]}")
 
         if checked % 100 == 0:
             print(
@@ -659,6 +675,7 @@ def main() -> int:
                 f"records corrected={records_corrected}, "
                 f"titles fixed={titles_fixed}, "
                 f"descriptions fixed={descriptions_fixed}, "
+                f"subjects fixed={subjects_fixed}, "
                 f"unchanged={unchanged}, "
                 f"failures={failures}"
             )
@@ -668,6 +685,8 @@ def main() -> int:
     print(f"EduSecure records checked: {checked}")
     print(f"Titles corrected: {titles_fixed}")
     print(f"Descriptions corrected: {descriptions_fixed}")
+    if not title_description_only:
+        print(f"Subjects corrected: {subjects_fixed}")
     print(f"Records corrected: {records_corrected}")
     print(f"Unchanged: {unchanged}")
     print(f"Patch failures: {failures}")
