@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 import re
+import time
 from datetime import date, datetime
 from typing import Any, Dict, Iterable, Optional, Tuple
 
@@ -455,6 +456,48 @@ def decode_value(value: Dict[str, Any]) -> Any:
     return None
 
 
+def firestore_request_with_retry(
+    method: str,
+    url: str,
+    token: str,
+    *,
+    timeout: int = 30,
+    **kwargs: Any,
+) -> requests.Response:
+    """Retry temporary Firestore throttling/server errors without changing cleanup logic."""
+    max_attempts = 8
+    response: Optional[requests.Response] = None
+
+    for attempt in range(1, max_attempts + 1):
+        response = requests.request(
+            method,
+            url,
+            headers=headers(token),
+            timeout=timeout,
+            **kwargs,
+        )
+        if response.status_code not in {429, 500, 502, 503, 504}:
+            return response
+
+        if attempt == max_attempts:
+            break
+
+        retry_after = clean(response.headers.get("Retry-After"))
+        try:
+            delay = max(1, min(60, int(float(retry_after)))) if retry_after else min(60, 2 ** attempt)
+        except (TypeError, ValueError):
+            delay = min(60, 2 ** attempt)
+
+        print(
+            f"Firestore HTTP {response.status_code}; "
+            f"retrying attempt {attempt + 1}/{max_attempts} after {delay}s..."
+        )
+        time.sleep(delay)
+
+    assert response is not None
+    return response
+
+
 def list_materials(token: str) -> list[Dict[str, Any]]:
     """Load the COMPLETE study_materials collection, following every Firestore page."""
     url = f"https://firestore.googleapis.com/v1/projects/{FIREBASE_PROJECT_ID}/databases/(default)/documents/study_materials"
@@ -465,7 +508,13 @@ def list_materials(token: str) -> list[Dict[str, Any]]:
 
     while True:
         page_number += 1
-        response = requests.get(url, params=params, headers=headers(token), timeout=30)
+        response = firestore_request_with_retry(
+            "GET",
+            url,
+            token,
+            params=params,
+            timeout=30,
+        )
         if response.status_code == 404:
             print(f"Loaded page {page_number}: 0 records (collection not found)")
             return []
@@ -511,10 +560,11 @@ def patch_material_fields(
     if not fields:
         return True
 
-    response = requests.patch(
+    response = firestore_request_with_retry(
+        "PATCH",
         f"https://firestore.googleapis.com/v1/{document_name}",
+        token,
         params=[("key", FIREBASE_API_KEY), *masks],
-        headers=headers(token),
         json={"fields": fields},
         timeout=25,
     )
