@@ -456,23 +456,36 @@ def decode_value(value: Dict[str, Any]) -> Any:
 
 
 def list_materials(token: str) -> list[Dict[str, Any]]:
+    """Load the COMPLETE study_materials collection, following every Firestore page."""
     url = f"https://firestore.googleapis.com/v1/projects/{FIREBASE_PROJECT_ID}/databases/(default)/documents/study_materials"
+    # pageSize controls only the size of each server page. It is NOT a total-record limit.
     params: Dict[str, Any] = {"pageSize": 1000, "key": FIREBASE_API_KEY}
     out: list[Dict[str, Any]] = []
+    page_number = 0
+
     while True:
+        page_number += 1
         response = requests.get(url, params=params, headers=headers(token), timeout=30)
         if response.status_code == 404:
+            print(f"Loaded page {page_number}: 0 records (collection not found)")
             return []
         response.raise_for_status()
         body = response.json()
+
+        page_count = 0
         for raw in body.get("documents", []):
             fields = {k: decode_value(v) for k, v in (raw.get("fields") or {}).items()}
             fields["_name"] = raw.get("name", "")
             out.append(fields)
+            page_count += 1
+
+        print(f"Loaded page {page_number}: {page_count} records (total loaded: {len(out)})")
+
         next_token = body.get("nextPageToken")
         if not next_token:
             break
         params["pageToken"] = next_token
+
     return out
 
 
@@ -511,9 +524,19 @@ def patch_material_fields(
 def main() -> int:
     token = firebase_sign_in()
     materials = list_materials(token)
+
+    total_records = len(materials)
     checked = 0
-    fixed = 0
-    subject_fixed = 0
+    records_corrected = 0
+    titles_fixed = 0
+    descriptions_fixed = 0
+    unchanged = 0
+    failures = 0
+    oldest_checked_date = ""
+    oldest_corrected_date = ""
+
+    print(f"Total Firestore records loaded: {total_records}")
+    print("Starting full historical EduSecure title/description cleanup...")
 
     for item in materials:
         source = clean(item.get("source")).lower()
@@ -521,55 +544,87 @@ def main() -> int:
             continue
 
         checked += 1
+        date_text = clean(item.get("source_date"))
+        if date_text and (not oldest_checked_date or date_text < oldest_checked_date):
+            oldest_checked_date = date_text
+
         old_title = clean(item.get("title"))
         old_description = clean(item.get("description"))
         old_subject = normalize_subject(item.get("subject"))
+
+        # Reuse the SAME existing intelligence and cleaning rules.
+        # Subject is used only as cleaning context; this historical run does NOT patch it.
         evidence = [old_title, old_description]
-        new_subject = detect_subject(evidence, current_subject=old_subject)
-        if new_subject == "General" and old_subject in ACADEMIC_SUBJECTS:
-            new_subject = old_subject
-        if new_subject == "General" and old_subject.lower() == "circular" and ADMIN_WORD_RE.search(" ".join(evidence)):
-            new_subject = "Circular"
-
-        new_title = sanitize_title(old_title, new_subject)
-        new_description = sanitize_description(old_description or old_title, new_subject, fallback_title=new_title)
-
-        changes: Dict[str, str] = {}
-        if new_title != old_title:
-            changes["title"] = new_title
-        if new_description != old_description:
-            changes["description"] = new_description
-        if new_subject and new_subject != old_subject:
-            changes["subject"] = new_subject
-
-        if not changes:
-            continue
-
-        if patch_material_fields(
-            clean(item.get("_name")),
-            token,
-            title=changes.get("title"),
-            description=changes.get("description"),
-            subject=changes.get("subject"),
+        cleaning_subject = detect_subject(evidence, current_subject=old_subject)
+        if cleaning_subject == "General" and old_subject in ACADEMIC_SUBJECTS:
+            cleaning_subject = old_subject
+        if (
+            cleaning_subject == "General"
+            and old_subject.lower() == "circular"
+            and ADMIN_WORD_RE.search(" ".join(evidence))
         ):
-            fixed += 1
-            if "subject" in changes:
-                subject_fixed += 1
-            date_text = clean(item.get("source_date"))
-            print(
-                "✅ CLEANED "
-                f"date={date_text or '(unknown)'} | "
-                f"title: {old_title!r} -> {new_title!r} | "
-                f"subject: {old_subject or '(blank)'} -> {new_subject or '(blank)'}"
-            )
-        else:
-            print(f"❌ Could not patch: {old_title[:100]}")
+            cleaning_subject = "Circular"
 
-    print(
-        "EduSecure intelligence cleanup complete: "
-        f"checked={checked}, records_fixed={fixed}, subjects_fixed={subject_fixed}"
-    )
-    return 0
+        new_title = sanitize_title(old_title, cleaning_subject)
+        new_description = sanitize_description(
+            old_description or old_title,
+            cleaning_subject,
+            fallback_title=new_title,
+        )
+
+        title_changed = new_title != old_title
+        description_changed = new_description != old_description
+
+        if not title_changed and not description_changed:
+            unchanged += 1
+        else:
+            if patch_material_fields(
+                clean(item.get("_name")),
+                token,
+                title=new_title if title_changed else None,
+                description=new_description if description_changed else None,
+            ):
+                records_corrected += 1
+                if title_changed:
+                    titles_fixed += 1
+                if description_changed:
+                    descriptions_fixed += 1
+                if date_text and (not oldest_corrected_date or date_text < oldest_corrected_date):
+                    oldest_corrected_date = date_text
+
+                print(
+                    "✅ CLEANED "
+                    f"date={date_text or '(unknown)'} | "
+                    f"title: {old_title!r} -> {new_title!r} | "
+                    f"description_changed={description_changed}"
+                )
+            else:
+                failures += 1
+                print(f"❌ Could not patch title/description: {old_title[:100]}")
+
+        if checked % 100 == 0:
+            print(
+                "Progress: "
+                f"EduSecure checked={checked}, "
+                f"records corrected={records_corrected}, "
+                f"titles fixed={titles_fixed}, "
+                f"descriptions fixed={descriptions_fixed}, "
+                f"unchanged={unchanged}, "
+                f"failures={failures}"
+            )
+
+    print("\nFULL WEBSITE TITLE CLEANUP COMPLETE")
+    print(f"Total records scanned: {total_records}")
+    print(f"EduSecure records checked: {checked}")
+    print(f"Titles corrected: {titles_fixed}")
+    print(f"Descriptions corrected: {descriptions_fixed}")
+    print(f"Records corrected: {records_corrected}")
+    print(f"Unchanged: {unchanged}")
+    print(f"Patch failures: {failures}")
+    print(f"Oldest EduSecure record checked: {oldest_checked_date or '(unknown)'}")
+    print(f"Oldest corrected record: {oldest_corrected_date or '(none)'}")
+
+    return 1 if failures else 0
 
 
 if __name__ == "__main__":
