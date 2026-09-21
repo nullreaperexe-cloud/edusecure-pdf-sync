@@ -151,14 +151,6 @@ def main() -> int:
             source_id = announcements.stable_message_id(message_text, msg_date)
             valid_source_ids.add(source_id)
 
-            # Fix ordering NOW, independently of OpenRouter quota.
-            if msg_date and announcements.patch_announcement_dates(
-                source_id,
-                msg_date,
-                id_token,
-            ):
-                date_repairs += 1
-
             ai_text = _ai_text(message_text, detail_text)
             if not ai_text:
                 ignored += 1
@@ -242,6 +234,7 @@ def main() -> int:
                     existing_document_name=announcements.announcement_document_name(
                         item["id"]
                     ),
+                    preserve_created_at=True,
                 )
                 if ok:
                     repaired += 1
@@ -256,7 +249,7 @@ def main() -> int:
         print(f"Messages scanned: {scanned}")
         print(f"Messages opened: {opened}")
         print(f"Attachment/PDF messages skipped: {attachment_messages}")
-        print(f"Date/order repairs applied: {date_repairs}")
+        print("Existing announcement sort order preserved during AI repair.")
         print(f"Announcements queued for AI: {len(pending)}")
         print(f"Announcements AI-repaired: {repaired}")
         print(f"AI retries pending: {ai_retries}")
