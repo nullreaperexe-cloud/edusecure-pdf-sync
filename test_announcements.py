@@ -3,6 +3,7 @@ from datetime import date
 from unittest.mock import patch
 
 import announcement_processor as announcements
+import openrouter_title as ai_title
 
 
 class AnnouncementProcessorTests(unittest.TestCase):
@@ -47,6 +48,37 @@ class AnnouncementProcessorTests(unittest.TestCase):
     def test_greeting_only_is_ignored_before_ai_call(self):
         self.assertFalse(
             announcements.useful_announcement("Dear Students Good Morning Thanks")
+        )
+
+
+    def test_title_date_is_stripped(self):
+        title = ai_title._final_title_cleanup(
+            "Science Project Submission - 21 September 2026",
+            "Science",
+        )
+        self.assertEqual(title, "Project Submission")
+        self.assertNotIn("2026", title)
+        self.assertNotIn("September", title)
+
+    def test_created_at_uses_edusecure_message_date(self):
+        fields = announcements._announcement_fields(
+            {
+                "title": "Project Submission",
+                "description": "Submit the project.",
+                "category": "Projects",
+                "subject": "Science",
+                "priority": "normal",
+                "sourceMessageId": "edusecure-test",
+            },
+            date(2026, 9, 21),
+        )
+        self.assertEqual(
+            fields["createdAt"]["timestampValue"],
+            "2026-09-21T00:00:00Z",
+        )
+        self.assertEqual(
+            fields["messageDate"]["timestampValue"],
+            "2026-09-21T00:00:00Z",
         )
 
 
