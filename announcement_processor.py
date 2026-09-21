@@ -13,7 +13,7 @@ import title_cleaner as intelligence
 FIREBASE_PROJECT_ID = intelligence.FIREBASE_PROJECT_ID
 FIREBASE_API_KEY = intelligence.FIREBASE_API_KEY
 ANNOUNCEMENTS_COLLECTION = "announcements"
-BACKFILL_STATE_DOCUMENT = "automation_state_announcement_backfill_v2_ai"
+BACKFILL_STATE_DOCUMENT = "automation_state_announcement_backfill_v3_ai_refresh"
 
 ALLOWED_CATEGORIES = (
     "Tests",
@@ -147,7 +147,13 @@ def load_existing_document_map(id_token: str) -> Dict[str, str]:
             fields = raw.get("fields") or {}
             source_id = clean(decode_value(fields.get("sourceMessageId") or {}))
             name = clean(raw.get("name"))
-            if source_id and name and not source_id.startswith("__announcement_backfill"):
+            if (
+                source_id
+                and name
+                and source_id != BACKFILL_STATE_DOCUMENT
+                and not source_id.startswith("__announcement_backfill")
+                and not source_id.startswith("automation_state_announcement_backfill")
+            ):
                 records[source_id] = name
 
         token = body.get("nextPageToken")
