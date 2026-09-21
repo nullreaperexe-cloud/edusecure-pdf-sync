@@ -1,4 +1,5 @@
 name: EduSecure PDF Sync
+# Announcement pipeline: v4 batch-clean
 
 on:
   workflow_dispatch:
