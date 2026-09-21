@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import re
+import time
 from datetime import date, datetime, timezone
 from typing import Any, Dict, Optional, Set, Tuple
 
@@ -43,6 +44,51 @@ def firestore_headers(id_token: str = "") -> Dict[str, str]:
     return headers
 
 
+def firestore_request(
+    method: str,
+    url: str,
+    *,
+    id_token: str = "",
+    params: Any = None,
+    json_body: Any = None,
+    timeout: int = 30,
+    attempts: int = 5,
+):
+    """Firestore request with bounded retry for rate limits/transient errors."""
+    retryable = {429, 500, 502, 503, 504}
+    last = None
+
+    for attempt in range(attempts):
+        response = requests.request(
+            method,
+            url,
+            params=params,
+            headers=firestore_headers(id_token),
+            json=json_body,
+            timeout=timeout,
+        )
+        last = response
+
+        if response.status_code not in retryable:
+            return response
+
+        wait_seconds = min(12, 1.5 * (2 ** attempt))
+        retry_after = response.headers.get("Retry-After")
+        try:
+            if retry_after:
+                wait_seconds = max(wait_seconds, float(retry_after))
+        except Exception:
+            pass
+
+        print(
+            f"Firestore HTTP {response.status_code}; "
+            f"retrying in {wait_seconds:.1f}s ({attempt + 1}/{attempts})"
+        )
+        time.sleep(wait_seconds)
+
+    return last
+
+
 def decode_value(value: Dict[str, Any]) -> Any:
     if not isinstance(value, dict):
         return None
@@ -78,10 +124,11 @@ def load_existing_state(id_token: str) -> Tuple[Set[str], Optional[date]]:
     latest_message_date: Optional[date] = None
 
     while True:
-        response = requests.get(
+        response = firestore_request(
+            "GET",
             base,
             params=params,
-            headers=firestore_headers(id_token),
+            id_token=id_token,
             timeout=30,
         )
         if response.status_code == 404:
@@ -169,10 +216,11 @@ def backfill_completed(id_token: str) -> bool:
         f"https://firestore.googleapis.com/v1/projects/{FIREBASE_PROJECT_ID}"
         f"/databases/(default)/documents/{ANNOUNCEMENTS_COLLECTION}/{BACKFILL_STATE_DOCUMENT}"
     )
-    response = requests.get(
+    response = firestore_request(
+        "GET",
         url,
         params={"key": FIREBASE_API_KEY},
-        headers=firestore_headers(id_token),
+        id_token=id_token,
         timeout=25,
     )
     if response.status_code == 404:
@@ -206,11 +254,12 @@ def mark_backfill_completed(id_token: str, scanned: int, created: int) -> bool:
         f"https://firestore.googleapis.com/v1/projects/{FIREBASE_PROJECT_ID}"
         f"/databases/(default)/documents/{ANNOUNCEMENTS_COLLECTION}"
     )
-    create = requests.post(
+    create = firestore_request(
+        "POST",
         collection_url,
         params={"key": FIREBASE_API_KEY, "documentId": BACKFILL_STATE_DOCUMENT},
-        headers=firestore_headers(id_token),
-        json={"fields": fields},
+        id_token=id_token,
+        json_body={"fields": fields},
         timeout=30,
     )
     if create.ok:
@@ -219,11 +268,12 @@ def mark_backfill_completed(id_token: str, scanned: int, created: int) -> bool:
         return False
 
     document_url = f"{collection_url}/{BACKFILL_STATE_DOCUMENT}"
-    update = requests.patch(
+    update = firestore_request(
+        "PATCH",
         document_url,
         params={"key": FIREBASE_API_KEY},
-        headers=firestore_headers(id_token),
-        json={"fields": fields},
+        id_token=id_token,
+        json_body={"fields": fields},
         timeout=30,
     )
     return update.ok
@@ -375,22 +425,24 @@ def upload_announcement(
     )
 
     if existing_document_name:
-        response = requests.patch(
+        response = firestore_request(
+            "PATCH",
             f"https://firestore.googleapis.com/v1/{existing_document_name}",
             params={"key": FIREBASE_API_KEY},
-            headers=firestore_headers(id_token),
-            json={"fields": fields},
+            id_token=id_token,
+            json_body={"fields": fields},
             timeout=30,
         )
         if response.ok:
             print(f"✅ Announcement refreshed: {clean(item.get('title'))}")
             return True
     else:
-        response = requests.post(
+        response = firestore_request(
+            "POST",
             collection_url,
             params={"key": FIREBASE_API_KEY, "documentId": source_id},
-            headers=firestore_headers(id_token),
-            json={"fields": fields},
+            id_token=id_token,
+            json_body={"fields": fields},
             timeout=30,
         )
         if response.ok:
