@@ -725,6 +725,7 @@ def upload_announcement(
     message_date: Optional[date],
     id_token: str,
     existing_document_name: str = "",
+    preserve_created_at: bool = False,
 ) -> bool:
     source_id = clean(item.get("sourceMessageId"))
     if not source_id:
@@ -737,12 +738,24 @@ def upload_announcement(
     )
 
     if existing_document_name:
+        patch_params: Any = {"key": FIREBASE_API_KEY}
+        patch_fields = fields
+        if preserve_created_at:
+            patch_fields = {
+                key: value
+                for key, value in fields.items()
+                if key != "createdAt"
+            }
+            patch_params = [("key", FIREBASE_API_KEY)]
+            for field_name in patch_fields:
+                patch_params.append(("updateMask.fieldPaths", field_name))
+
         response = firestore_request(
             "PATCH",
             f"https://firestore.googleapis.com/v1/{existing_document_name}",
-            params={"key": FIREBASE_API_KEY},
+            params=patch_params,
             id_token=id_token,
-            json_body={"fields": fields},
+            json_body={"fields": patch_fields},
             timeout=30,
         )
         if response.ok:
