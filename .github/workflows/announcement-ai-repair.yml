@@ -2,14 +2,6 @@ name: Repair Existing Announcements with AI
 
 on:
   workflow_dispatch:
-  push:
-    branches:
-      - main
-    paths:
-      - "announcement_ai_repair.py"
-      - "announcement_processor.py"
-      - "openrouter_title.py"
-      - ".github/workflows/announcement-ai-repair.yml"
 
 permissions:
   contents: read
