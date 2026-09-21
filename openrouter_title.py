@@ -231,7 +231,7 @@ def generate_announcement_metadata(evidence: Any, allowed_categories: Iterable[s
     if not parts:
         return None
 
-    source_text = "\\n".join(parts)[:5000].strip()
+    source_text = "\n".join(parts)[:5000].strip()
     if not source_text:
         return None
 
@@ -247,8 +247,10 @@ def generate_announcement_metadata(evidence: Any, allowed_categories: Iterable[s
         "Title must be short, grammatically correct, straight to the point, and based only on the message. "
         "Never put school name/code, dates, session year, Dear Students/Parents, greetings, PFA, Circular, "
         "Circular No., Attachment, Pay Now, Download, Preview, teacher signature, or UI filler in title. "
-        "Choose category by the MAIN PURPOSE of the message, not isolated words. "
-        "Tests only for an actual test/quiz; Exams only for exam/examination; Homework only when homework is given; "
+        "Choose category by the MAIN PURPOSE of the actual school message, not isolated words or EduSecure UI/navigation labels. "
+        "Words such as Class Test, Homework, Circular, More, Attachment, or menu labels may appear in the page chrome; "
+        "IGNORE them unless the actual message content clearly says that is the purpose. "
+        "Tests only when the message genuinely announces or discusses an actual test/quiz; Exams only for exam/examination; Homework only when homework is genuinely given; "
         "Assignments for assignment/submission; Projects for project work; Events for school events/PTM/functions; "
         "Holidays for closures/holidays; Timetable for timetable/schedule changes; Results for results/marks; "
         "Activities for school/class activities or bring-material instructions; Competitions for competitions/olympiads; "
@@ -259,8 +261,8 @@ def generate_announcement_metadata(evidence: Any, allowed_categories: Iterable[s
     user_prompt = (
         "Allowed categories (choose EXACTLY one): " + ", ".join(categories)
         + "\\nAllowed subjects (choose EXACTLY one): " + ", ".join(allowed_subjects)
-        + "\\n\\nEduSecure message:\\n" + source_text
-        + "\\n\\nReturn JSON only."
+        + "\n\nBEGIN UNTRUSTED EDUSecure DATA\n" + source_text
+        + "\nEND UNTRUSTED EDUSecure DATA\n\nReturn JSON only."
     )
 
     payload = {
