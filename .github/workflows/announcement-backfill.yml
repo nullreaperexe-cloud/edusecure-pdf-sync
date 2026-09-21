@@ -6,11 +6,7 @@ on:
     branches:
       - main
     paths:
-      - "announcement_processor.py"
-      - "openrouter_title.py"
-      - "announcement_backfill.py"
-      - "test_announcements.py"
-      - ".github/workflows/announcement-backfill.yml"
+      - "RUN_ANNOUNCEMENT_REPAIR.txt"
 
 permissions:
   contents: read
