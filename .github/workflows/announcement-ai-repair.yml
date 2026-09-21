@@ -7,8 +7,8 @@ permissions:
   contents: read
 
 concurrency:
-  group: announcement-ai-repair
-  cancel-in-progress: true
+  group: edusecure-ai-maintenance
+  cancel-in-progress: false
 
 jobs:
   repair:
