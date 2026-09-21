@@ -109,7 +109,9 @@ jobs:
           retention-days: 7
 
       - name: Queue next 24/7 worker
-        if: always()
+        # Only a healthy completed worker may hand off to the next worker.
+        # Validation failures/cancelled deploys must never create a dispatch loop.
+        if: success()
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
