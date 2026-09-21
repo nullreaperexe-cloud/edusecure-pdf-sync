@@ -15,6 +15,7 @@ from selenium.common.exceptions import WebDriverException
 import sync as legacy
 import title_cleaner as intelligence
 import openrouter_title as ai_title
+import announcement_processor as announcements
 
 START_URL = legacy.START_URL
 FIREBASE_PROJECT_ID = "academyvault-5d1eb"
@@ -353,6 +354,13 @@ def main() -> int:
     print(f"Existing PDF URLs loaded: {len(existing_urls)}")
     print(f"Existing semantic EduSecure duplicate keys loaded: {len(existing_semantic_keys)}")
 
+    try:
+        existing_announcement_ids = announcements.list_existing_source_ids(id_token)
+    except Exception as exc:
+        print(f"Could not read existing announcements: {exc}")
+        existing_announcement_ids = set()
+    print(f"Existing announcement source IDs loaded: {len(existing_announcement_ids)}")
+
     report: Dict[str, Any] = {
         "cutoff": cutoff.isoformat(),
         "existing_count": len(existing_urls),
@@ -360,6 +368,9 @@ def main() -> int:
         "newer_messages_seen": 0,
         "attachments_found": 0,
         "duplicates_skipped": 0,
+        "announcements_created": [],
+        "announcement_duplicates_skipped": 0,
+        "announcement_messages_ignored": 0,
         "uploaded": [],
         "failures": [],
     }
@@ -445,7 +456,28 @@ def main() -> int:
             legacy.restore_app_after_pdf(driver, app_handle)
 
             if not pdf_url:
-                print("No PDF attachment in this message")
+                print("No PDF attachment -> routing message to Announcements")
+                status, announcement_item = announcements.process_no_attachment_message(
+                    message_text=message_text,
+                    detail_text=detail_text,
+                    message_date=msg_date,
+                    id_token=id_token,
+                    existing_source_ids=existing_announcement_ids,
+                )
+                if status == "created" and announcement_item:
+                    report["announcements_created"].append({
+                        "title": announcement_item.get("title", ""),
+                        "category": announcement_item.get("category", ""),
+                        "source_date": msg_date.isoformat(),
+                    })
+                elif status == "duplicate":
+                    report["announcement_duplicates_skipped"] += 1
+                elif status == "ignored":
+                    report["announcement_messages_ignored"] += 1
+                else:
+                    report["failures"].append(
+                        f"Announcement upload failed for message dated {msg_date.isoformat()}"
+                    )
                 legacy.return_dashboard_and_restore_v25(driver, app_handle, saved_position)
                 continue
 
@@ -523,8 +555,11 @@ def main() -> int:
         print(f"Newer messages seen: {report['newer_messages_seen']}")
         print(f"Messages opened: {report['messages_opened']}")
         print(f"Attachments found: {report['attachments_found']}")
-        print(f"Duplicates skipped: {report['duplicates_skipped']}")
+        print(f"PDF duplicates skipped: {report['duplicates_skipped']}")
         print(f"New PDFs uploaded: {len(report['uploaded'])}")
+        print(f"New announcements uploaded: {len(report['announcements_created'])}")
+        print(f"Announcement duplicates skipped: {report['announcement_duplicates_skipped']}")
+        print(f"Announcement messages ignored: {report['announcement_messages_ignored']}")
         print(f"Failures: {len(report['failures'])}")
         return 1 if report["failures"] else 0
     finally:
