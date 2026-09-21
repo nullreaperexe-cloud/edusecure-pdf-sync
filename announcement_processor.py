@@ -117,6 +117,42 @@ def list_existing_source_ids(id_token: str) -> Set[str]:
     return source_ids
 
 
+def load_existing_document_map(id_token: str) -> Dict[str, str]:
+    """Map sourceMessageId -> Firestore document resource name."""
+    base = (
+        f"https://firestore.googleapis.com/v1/projects/{FIREBASE_PROJECT_ID}"
+        f"/databases/(default)/documents/{ANNOUNCEMENTS_COLLECTION}"
+    )
+    params: Dict[str, Any] = {"pageSize": 1000, "key": FIREBASE_API_KEY}
+    records: Dict[str, str] = {}
+
+    while True:
+        response = requests.get(
+            base,
+            params=params,
+            headers=firestore_headers(id_token),
+            timeout=30,
+        )
+        if response.status_code == 404:
+            return records
+        response.raise_for_status()
+        body = response.json()
+
+        for raw in body.get("documents", []):
+            fields = raw.get("fields") or {}
+            source_id = clean(decode_value(fields.get("sourceMessageId") or {}))
+            name = clean(raw.get("name"))
+            if source_id and name and not source_id.startswith("__announcement_backfill"):
+                records[source_id] = name
+
+        token = body.get("nextPageToken")
+        if not token:
+            break
+        params["pageToken"] = token
+
+    return records
+
+
 def backfill_completed(id_token: str) -> bool:
     url = (
         f"https://firestore.googleapis.com/v1/projects/{FIREBASE_PROJECT_ID}"
@@ -137,38 +173,49 @@ def backfill_completed(id_token: str) -> bool:
 
 
 def mark_backfill_completed(id_token: str, scanned: int, created: int) -> bool:
-    url = (
-        f"https://firestore.googleapis.com/v1/projects/{FIREBASE_PROJECT_ID}"
-        f"/databases/(default)/documents/{ANNOUNCEMENTS_COLLECTION}/{BACKFILL_STATE_DOCUMENT}"
-    )
     now = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
-    payload = {
-        "fields": {
-            "title": {"stringValue": "Announcement Backfill State"},
-            "description": {"stringValue": "Internal automation state"},
-            "category": {"stringValue": "General"},
-            "subject": {"stringValue": "General"},
-            "createdAt": {"timestampValue": now},
-            "priority": {"stringValue": "normal"},
-            "published": {"booleanValue": False},
-            "sourceMessageId": {"stringValue": BACKFILL_STATE_DOCUMENT},
-            "hasAttachment": {"booleanValue": False},
-            "attachmentUrl": {"stringValue": ""},
-            "completed": {"booleanValue": True},
-            "scanned": {"integerValue": str(scanned)},
-            "created": {"integerValue": str(created)},
-            "completedAt": {"timestampValue": now},
-        }
+    fields = {
+        "title": {"stringValue": "Announcement Backfill State"},
+        "description": {"stringValue": "Internal automation state"},
+        "category": {"stringValue": "General"},
+        "subject": {"stringValue": "General"},
+        "createdAt": {"timestampValue": now},
+        "priority": {"stringValue": "normal"},
+        "published": {"booleanValue": False},
+        "sourceMessageId": {"stringValue": BACKFILL_STATE_DOCUMENT},
+        "hasAttachment": {"booleanValue": False},
+        "attachmentUrl": {"stringValue": ""},
+        "completed": {"booleanValue": True},
+        "scanned": {"integerValue": str(scanned)},
+        "created": {"integerValue": str(created)},
+        "completedAt": {"timestampValue": now},
     }
-    response = requests.patch(
-        url,
-        params={"key": FIREBASE_API_KEY},
+
+    collection_url = (
+        f"https://firestore.googleapis.com/v1/projects/{FIREBASE_PROJECT_ID}"
+        f"/databases/(default)/documents/{ANNOUNCEMENTS_COLLECTION}"
+    )
+    create = requests.post(
+        collection_url,
+        params={"key": FIREBASE_API_KEY, "documentId": BACKFILL_STATE_DOCUMENT},
         headers=firestore_headers(id_token),
-        json=payload,
+        json={"fields": fields},
         timeout=30,
     )
-    return response.ok
+    if create.ok:
+        return True
+    if create.status_code != 409:
+        return False
 
+    document_url = f"{collection_url}/{BACKFILL_STATE_DOCUMENT}"
+    update = requests.patch(
+        document_url,
+        params={"key": FIREBASE_API_KEY},
+        headers=firestore_headers(id_token),
+        json={"fields": fields},
+        timeout=30,
+    )
+    return update.ok
 
 def classify_category(text: Any) -> str:
     raw = clean(text).lower()
@@ -266,41 +313,45 @@ def build_announcement(
     detail_text: str,
     message_date: Optional[date],
 ) -> Optional[Dict[str, Any]]:
-    evidence = [message_text, detail_text]
-    combined = clean(detail_text) or clean(message_text)
-    if not useful_announcement(combined):
+    primary = clean(message_text) or clean(detail_text)
+    if not useful_announcement(primary):
         return None
+
+    # Dashboard message text is intentionally primary: the detail page can contain
+    # unrelated UI labels such as "Class Test More" that poison category/title logic.
+    evidence = [primary]
+    if len(primary) < 40 and clean(detail_text):
+        evidence.append(clean(detail_text))
 
     subject = intelligence.detect_subject(evidence)
     if subject in {"Circular", "General", "School Diary", "Message", "Announcement", "Notice"}:
         subject = "General"
 
-    fallback = intelligence.sanitize_title(combined, subject)
+    fallback = intelligence.sanitize_title(primary, subject)
     title = ai_title.generate_title(
         evidence,
         subject=subject,
         fallback_title=fallback,
     )
 
-    description = clean_description(combined)
+    description = clean_description(primary)
     if not description:
         description = title
 
     return {
         "title": title,
         "description": description,
-        "category": classify_category(combined),
+        "category": classify_category(primary),
         "subject": subject or "General",
-        "priority": classify_priority(combined),
+        "priority": classify_priority(primary),
         "sourceMessageId": stable_message_id(message_text, message_date),
     }
 
 
-def upload_announcement(
+def _announcement_fields(
     item: Dict[str, Any],
     message_date: Optional[date],
-    id_token: str,
-) -> bool:
+) -> Dict[str, Any]:
     now = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
 
     if message_date:
@@ -314,7 +365,7 @@ def upload_announcement(
     else:
         message_date_value = {"nullValue": None}
 
-    fields = {
+    return {
         "title": {"stringValue": clean(item.get("title"))},
         "description": {"stringValue": clean(item.get("description"))},
         "category": {"stringValue": clean(item.get("category")) or "General"},
@@ -329,34 +380,78 @@ def upload_announcement(
         "attachmentUrl": {"stringValue": ""},
     }
 
+
+def upload_announcement(
+    item: Dict[str, Any],
+    message_date: Optional[date],
+    id_token: str,
+    existing_document_name: str = "",
+) -> bool:
     source_id = clean(item.get("sourceMessageId"))
     if not source_id:
         return False
 
-    # Stable sourceMessageId is also the Firestore document ID. This makes
-    # live sync + historical backfill idempotent even if they race.
-    url = (
+    fields = _announcement_fields(item, message_date)
+    collection_url = (
         f"https://firestore.googleapis.com/v1/projects/{FIREBASE_PROJECT_ID}"
-        f"/databases/(default)/documents/{ANNOUNCEMENTS_COLLECTION}/{source_id}"
-    )
-    response = requests.patch(
-        url,
-        params={"key": FIREBASE_API_KEY},
-        headers=firestore_headers(id_token),
-        json={"fields": fields},
-        timeout=30,
+        f"/databases/(default)/documents/{ANNOUNCEMENTS_COLLECTION}"
     )
 
-    if response.ok:
-        print(
-            "✅ Announcement uploaded: "
-            f"{clean(item.get('title'))} [{clean(item.get('category'))}]"
+    if existing_document_name:
+        response = requests.patch(
+            f"https://firestore.googleapis.com/v1/{existing_document_name}",
+            params={"key": FIREBASE_API_KEY},
+            headers=firestore_headers(id_token),
+            json={"fields": fields},
+            timeout=30,
         )
-        return True
+        if response.ok:
+            print(f"✅ Announcement refreshed: {clean(item.get('title'))}")
+            return True
+    else:
+        response = requests.post(
+            collection_url,
+            params={"key": FIREBASE_API_KEY, "documentId": source_id},
+            headers=firestore_headers(id_token),
+            json={"fields": fields},
+            timeout=30,
+        )
+        if response.ok:
+            print(
+                "✅ Announcement uploaded: "
+                f"{clean(item.get('title'))} [{clean(item.get('category'))}]"
+            )
+            return True
+
+        # A concurrent live/backfill create of the same stable document ID is
+        # a duplicate, not a failure.
+        if response.status_code == 409:
+            print("Concurrent duplicate announcement create -> already exists")
+            return True
 
     print(f"❌ Announcement upload failed: HTTP {response.status_code}")
     print(response.text[:1000])
     return False
+
+def refresh_existing_announcement(
+    message_text: str,
+    detail_text: str,
+    message_date: Optional[date],
+    id_token: str,
+    document_name: str,
+) -> Tuple[str, Optional[Dict[str, Any]]]:
+    """Regenerate one historical announcement in place; never duplicate it."""
+    item = build_announcement(message_text, detail_text, message_date)
+    if not item:
+        return "ignored", None
+    if upload_announcement(
+        item,
+        message_date,
+        id_token,
+        existing_document_name=document_name,
+    ):
+        return "refreshed", item
+    return "failed", item
 
 
 def process_no_attachment_message(
