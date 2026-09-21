@@ -48,6 +48,7 @@ def main() -> int:
     created = 0
     duplicates = 0
     ignored = 0
+    ai_retries = 0
     failures = 0
 
     try:
@@ -139,6 +140,9 @@ def main() -> int:
                 duplicates += 1
             elif status == "ignored":
                 ignored += 1
+            elif status == "retry":
+                ai_retries += 1
+                print("AI metadata unavailable; this message will be retried in the next backfill run.")
             else:
                 failures += 1
 
@@ -155,10 +159,11 @@ def main() -> int:
         print(f"Announcements created: {created}")
         print(f"Announcement duplicates skipped: {duplicates}")
         print(f"Useless messages ignored: {ignored}")
+        print(f"AI retries postponed: {ai_retries}")
         print(f"Failures: {failures}")
         print(f"Reached EduSecure history bottom: {reached_bottom}")
 
-        if reached_bottom and failures == 0:
+        if reached_bottom and failures == 0 and ai_retries == 0:
             if announcements.mark_backfill_completed(id_token, scanned, created):
                 print("Historical announcement backfill marked complete ✅")
                 return 0
@@ -170,6 +175,8 @@ def main() -> int:
                 "Backfill did not reach the bottom of EduSecure history. "
                 "It is intentionally NOT marked complete."
             )
+        if ai_retries:
+            print("AI retries remain pending, so backfill is NOT marked complete.")
         return 1
 
     finally:
