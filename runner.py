@@ -354,18 +354,11 @@ def main() -> int:
     print(f"Existing PDF URLs loaded: {len(existing_urls)}")
     print(f"Existing semantic EduSecure duplicate keys loaded: {len(existing_semantic_keys)}")
 
-    try:
-        existing_announcement_ids, latest_announcement_date = announcements.load_existing_state(id_token)
-    except Exception as exc:
-        print(f"Could not read existing announcements: {exc}")
-        existing_announcement_ids = set()
-        latest_announcement_date = None
-
-    announcement_cutoff = latest_announcement_date or (TODAY - timedelta(days=1))
-    print(f"Existing announcement source IDs loaded: {len(existing_announcement_ids)}")
+    existing_announcement_ids: Set[str] = set()
+    announcement_cutoff = TODAY - timedelta(days=1)
     print(
-        "Announcement scan cutoff: "
-        f"{announcement_cutoff.isoformat()} (same-day messages remain eligible and are deduplicated by sourceMessageId)"
+        "Announcement live scan uses deterministic Firestore document IDs; "
+        f"messages from {announcement_cutoff.isoformat()} onward remain eligible."
     )
 
     report: Dict[str, Any] = {
