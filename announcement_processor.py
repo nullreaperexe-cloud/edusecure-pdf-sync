@@ -179,10 +179,11 @@ def load_existing_document_map(id_token: str) -> Dict[str, str]:
     records: Dict[str, str] = {}
 
     while True:
-        response = requests.get(
+        response = firestore_request(
+            "GET",
             base,
             params=params,
-            headers=firestore_headers(id_token),
+            id_token=id_token,
             timeout=30,
         )
         if response.status_code == 404:
@@ -209,6 +210,118 @@ def load_existing_document_map(id_token: str) -> Dict[str, str]:
         params["pageToken"] = token
 
     return records
+
+
+
+def cleanup_legacy_announcement_documents(
+    valid_source_ids: Set[str],
+    id_token: str,
+) -> Dict[str, int]:
+    """One-shot cleanup after a full EduSecure history scan.
+
+    - Keeps current deterministic edusecure-* documents.
+    - Migrates old auto-ID duplicates to the deterministic ID, then deletes old copy.
+    - Deletes stale EduSecure announcement docs that no longer correspond to a real
+      no-attachment announcement.
+    - Deletes the original test-001 dummy record.
+    """
+    stats = {"scanned": 0, "migrated": 0, "deleted": 0, "kept": 0, "skipped": 0}
+    base = (
+        f"https://firestore.googleapis.com/v1/projects/{FIREBASE_PROJECT_ID}"
+        f"/databases/(default)/documents/{ANNOUNCEMENTS_COLLECTION}"
+    )
+    params: Dict[str, Any] = {"pageSize": 200, "key": FIREBASE_API_KEY}
+
+    while True:
+        response = firestore_request(
+            "GET",
+            base,
+            params=params,
+            id_token=id_token,
+            timeout=30,
+            attempts=2,
+        )
+        if response.status_code == 404:
+            break
+        if not response.ok:
+            print(
+                "Legacy announcement cleanup skipped because Firestore list read "
+                f"returned HTTP {response.status_code}."
+            )
+            stats["skipped"] += 1
+            return stats
+
+        body = response.json()
+        for raw in body.get("documents", []):
+            stats["scanned"] += 1
+            name = clean(raw.get("name"))
+            if not name:
+                continue
+
+            doc_id = name.rsplit("/", 1)[-1]
+            fields = raw.get("fields") or {}
+            source_id = clean(decode_value(fields.get("sourceMessageId") or {}))
+
+            if (
+                doc_id.startswith("automation_state_announcement_backfill")
+                or source_id.startswith("automation_state_announcement_backfill")
+                or doc_id.startswith("__announcement_backfill")
+                or source_id.startswith("__announcement_backfill")
+            ):
+                stats["kept"] += 1
+                continue
+
+            should_delete = False
+
+            if source_id == "test-001" or doc_id == "test-001":
+                should_delete = True
+            elif source_id.startswith("edusecure-"):
+                if source_id not in valid_source_ids:
+                    should_delete = True
+                elif doc_id != source_id:
+                    # Preserve the old data at the deterministic ID before deleting
+                    # the legacy auto-ID copy. AI repair will overwrite it later.
+                    create = firestore_request(
+                        "POST",
+                        base,
+                        params={"key": FIREBASE_API_KEY, "documentId": source_id},
+                        id_token=id_token,
+                        json_body={"fields": fields},
+                        timeout=30,
+                        attempts=2,
+                    )
+                    if create.ok or create.status_code == 409:
+                        should_delete = True
+                        stats["migrated"] += 1
+
+            if should_delete:
+                delete = firestore_request(
+                    "DELETE",
+                    f"https://firestore.googleapis.com/v1/{name}",
+                    params={"key": FIREBASE_API_KEY},
+                    id_token=id_token,
+                    timeout=25,
+                    attempts=2,
+                )
+                if delete.ok or delete.status_code == 404:
+                    stats["deleted"] += 1
+                else:
+                    stats["skipped"] += 1
+            else:
+                stats["kept"] += 1
+
+        token = body.get("nextPageToken")
+        if not token:
+            break
+        params["pageToken"] = token
+
+    print(
+        "Legacy announcement cleanup: "
+        f"scanned={stats['scanned']} migrated={stats['migrated']} "
+        f"deleted={stats['deleted']} kept={stats['kept']} skipped={stats['skipped']}"
+    )
+    return stats
+
 
 
 def backfill_completed(id_token: str) -> bool:
@@ -238,13 +351,7 @@ def mark_backfill_completed(id_token: str, scanned: int, created: int) -> bool:
         "description": {"stringValue": "Internal automation state"},
         "category": {"stringValue": "General"},
         "subject": {"stringValue": "General"},
-        # Website sorts by createdAt, so make it the EduSecure arrival date,
-        # never the later GitHub/backfill upload time.
-        "createdAt": (
-            {"timestampValue": message_ts}
-            if message_date
-            else {"timestampValue": now}
-        ),
+        "createdAt": {"timestampValue": now},
         "priority": {"stringValue": "normal"},
         "published": {"booleanValue": False},
         "sourceMessageId": {"stringValue": BACKFILL_STATE_DOCUMENT},
