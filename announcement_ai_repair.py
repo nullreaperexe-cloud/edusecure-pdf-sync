@@ -37,7 +37,10 @@ def list_existing_announcements(id_token: str) -> List[Dict[str, Any]]:
         for raw in body.get("documents", []):
             fields = raw.get("fields") or {}
             source_id = clean(announcements.decode_value(fields.get("sourceMessageId") or {}))
-            if source_id.startswith("__announcement_backfill"):
+            if (
+                source_id.startswith("__announcement_backfill")
+                or source_id.startswith("automation_state_announcement_backfill")
+            ):
                 continue
 
             item = {
