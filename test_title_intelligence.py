@@ -1,6 +1,7 @@
 import unittest
 
 import title_cleaner as intelligence
+import openrouter_title as ai_title
 
 
 class TitleSubjectIntelligenceTests(unittest.TestCase):
@@ -63,6 +64,30 @@ class TitleSubjectIntelligenceTests(unittest.TestCase):
             once = intelligence.sanitize_title(raw, subject)
             twice = intelligence.sanitize_title(once, subject)
             self.assertEqual(once, twice)
+
+
+    def test_ai_hard_filter_removes_dates_and_metadata(self):
+        raw = (
+            "Circular No. 065 - September 21, 2026 - "
+            "Mathematics Exercise 7.2 Correction"
+        )
+        self.assertEqual(
+            ai_title._final_title_cleanup(raw, "Mathematics"),
+            "Exercise 7.2 Correction",
+        )
+
+    def test_ai_falls_back_cleanly_without_key(self):
+        previous = ai_title.OPENROUTER_API_KEY
+        try:
+            ai_title.OPENROUTER_API_KEY = ""
+            title = ai_title.generate_title(
+                ["Dear Students September 21, 2026 Mathematics Exercise 7.2 Correction"],
+                subject="Mathematics",
+                fallback_title="Mathematics Exercise 7.2 Correction",
+            )
+            self.assertEqual(title, "Exercise 7.2 Correction")
+        finally:
+            ai_title.OPENROUTER_API_KEY = previous
 
 
 if __name__ == "__main__":
