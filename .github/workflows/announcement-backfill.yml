@@ -7,6 +7,7 @@ on:
       - main
     paths:
       - "announcement_processor.py"
+      - "openrouter_title.py"
       - "announcement_backfill.py"
       - "test_announcements.py"
       - ".github/workflows/announcement-backfill.yml"
@@ -16,7 +17,8 @@ permissions:
 
 concurrency:
   group: edusecure-announcement-backfill
-  cancel-in-progress: false
+  # Always keep only the newest AI/backfill code running.
+  cancel-in-progress: true
 
 jobs:
   backfill:
