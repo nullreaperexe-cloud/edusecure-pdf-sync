@@ -10,6 +10,7 @@ on:
       - "sync.py"
       - "sync_repair.py"
       - "title_cleaner.py"
+      - "openrouter_title.py"
       - "requirements.txt"
       - ".github/workflows/sync.yml"
   schedule:
@@ -47,6 +48,7 @@ jobs:
           EDUSECURE_USERNAME: ${{ secrets.EDUSECURE_USERNAME }}
           EDUSECURE_PASSWORD: ${{ secrets.EDUSECURE_PASSWORD }}
           FIREBASE_ADMIN_PASSWORD: ${{ secrets.FIREBASE_ADMIN_PASSWORD }}
+          OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
         run: |
           set +e
           END_TIME=$(( $(date +%s) + 19800 ))
