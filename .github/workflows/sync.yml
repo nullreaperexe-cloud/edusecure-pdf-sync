@@ -11,6 +11,7 @@ on:
       - "sync_repair.py"
       - "title_cleaner.py"
       - "openrouter_title.py"
+      - "test_title_intelligence.py"
       - "requirements.txt"
       - ".github/workflows/sync.yml"
   schedule:
@@ -43,6 +44,11 @@ jobs:
 
       - name: Install dependencies
         run: python -m pip install -r requirements.txt
+
+      - name: Validate automation code
+        run: |
+          python -m py_compile runner.py sync.py sync_repair.py title_cleaner.py openrouter_title.py
+          python -m unittest -v test_title_intelligence.py
 
       - name: Run EduSecure monitor every 5 minutes
         env:
