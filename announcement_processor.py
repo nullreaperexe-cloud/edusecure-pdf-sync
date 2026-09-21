@@ -68,13 +68,14 @@ def stable_message_id(message_text: Any, message_date: Optional[date] = None) ->
     return f"edusecure-{digest[:32]}"
 
 
-def list_existing_source_ids(id_token: str) -> Set[str]:
+def load_existing_state(id_token: str) -> Tuple[Set[str], Optional[date]]:
     base = (
         f"https://firestore.googleapis.com/v1/projects/{FIREBASE_PROJECT_ID}"
         f"/databases/(default)/documents/{ANNOUNCEMENTS_COLLECTION}"
     )
     params: Dict[str, Any] = {"pageSize": 1000, "key": FIREBASE_API_KEY}
     source_ids: Set[str] = set()
+    latest_message_date: Optional[date] = None
 
     while True:
         response = requests.get(
@@ -84,7 +85,7 @@ def list_existing_source_ids(id_token: str) -> Set[str]:
             timeout=30,
         )
         if response.status_code == 404:
-            return source_ids
+            return source_ids, latest_message_date
         response.raise_for_status()
         body = response.json()
 
@@ -94,11 +95,25 @@ def list_existing_source_ids(id_token: str) -> Set[str]:
             if source_id and not source_id.startswith("__announcement_backfill"):
                 source_ids.add(source_id)
 
+            raw_date = clean(decode_value(fields.get("messageDate") or {}))
+            if raw_date:
+                try:
+                    parsed = datetime.fromisoformat(raw_date.replace("Z", "+00:00")).date()
+                except Exception:
+                    parsed = None
+                if parsed and (latest_message_date is None or parsed > latest_message_date):
+                    latest_message_date = parsed
+
         token = body.get("nextPageToken")
         if not token:
             break
         params["pageToken"] = token
 
+    return source_ids, latest_message_date
+
+
+def list_existing_source_ids(id_token: str) -> Set[str]:
+    source_ids, _latest = load_existing_state(id_token)
     return source_ids
 
 
@@ -314,11 +329,17 @@ def upload_announcement(
         "attachmentUrl": {"stringValue": ""},
     }
 
+    source_id = clean(item.get("sourceMessageId"))
+    if not source_id:
+        return False
+
+    # Stable sourceMessageId is also the Firestore document ID. This makes
+    # live sync + historical backfill idempotent even if they race.
     url = (
         f"https://firestore.googleapis.com/v1/projects/{FIREBASE_PROJECT_ID}"
-        f"/databases/(default)/documents/{ANNOUNCEMENTS_COLLECTION}"
+        f"/databases/(default)/documents/{ANNOUNCEMENTS_COLLECTION}/{source_id}"
     )
-    response = requests.post(
+    response = requests.patch(
         url,
         params={"key": FIREBASE_API_KEY},
         headers=firestore_headers(id_token),
