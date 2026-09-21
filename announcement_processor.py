@@ -338,6 +338,45 @@ def clean_description(text: Any) -> str:
     return value
 
 
+
+def prepare_announcement_ai_text(value: Any) -> str:
+    """Strip EduSecure chrome before any AI classification/title request."""
+    text = clean(value)
+    if not text:
+        return ""
+
+    # Remove leading message-type/date chrome only. Real dates inside the message
+    # can remain in description, but they must never be copied into the title.
+    text = re.sub(
+        r"^(?:Message|Circular|School\s+Diary)\s+"
+        r"(?:Jan(?:uary)?|Feb(?:ruary)?|Mar(?:ch)?|Apr(?:il)?|May|Jun(?:e)?|"
+        r"Jul(?:y)?|Aug(?:ust)?|Sep(?:t(?:ember)?)?|Oct(?:ober)?|"
+        r"Nov(?:ember)?|Dec(?:ember)?)\.?\s+\d{1,2}(?:,)?\s+20\d{2}\s*",
+        " ",
+        text,
+        flags=re.I,
+    )
+
+    for pattern in intelligence.SCHOOL_PATTERNS:
+        text = re.sub(pattern, " ", text, flags=re.I)
+
+    # Remove URLs from the classification prompt. Link presence is not a category.
+    text = re.sub(r"https?://\S+", " ", text, flags=re.I)
+
+    # EduSecure often appends navigation labels to the actual message text.
+    # Strip them only when they occur as trailing UI chrome.
+    text = re.sub(
+        r"(?:\s+(?:Pay\s*Now|Class\s*Test|Circular|More|Attachment|Attachments)){1,8}\s*$",
+        " ",
+        text,
+        flags=re.I,
+    )
+
+    text = re.sub(r"\s+", " ", text).strip(" -:|,.;")
+    return text
+
+
+
 def build_announcement(
     message_text: str,
     detail_text: str,
@@ -347,13 +386,16 @@ def build_announcement(
     if not useful_announcement(primary):
         return None
 
-    # Dashboard card text is the trusted primary message. Detail pages can contain
-    # UI labels such as 'Class Test' / 'More', so only use detail text when the
-    # dashboard message is too short to classify reliably.
-    evidence = [primary]
-    detail = clean(detail_text)
-    if len(primary) < 40 and detail and detail != primary:
-        evidence.append(detail)
+    cleaned_primary = prepare_announcement_ai_text(primary)
+    cleaned_detail = prepare_announcement_ai_text(detail_text)
+
+    evidence = [cleaned_primary or primary]
+    if (
+        len(cleaned_primary) < 40
+        and cleaned_detail
+        and cleaned_detail != cleaned_primary
+    ):
+        evidence.append(cleaned_detail)
 
     # OpenRouter AI is the ONLY authority for announcement title + section.
     # If AI is unavailable/invalid, postpone instead of guessing a category.
