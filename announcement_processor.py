@@ -262,6 +262,24 @@ def cleanup_legacy_announcement_documents(
             fields = raw.get("fields") or {}
             source_id = clean(decode_value(fields.get("sourceMessageId") or {}))
 
+            # Older announcement versions may not have sourceMessageId. Rebuild it
+            # from the stored original EduSecure message + messageDate when possible.
+            raw_message_date = clean(decode_value(fields.get("messageDate") or {}))
+            stored_message = clean(decode_value(fields.get("originalMessage") or {}))
+            parsed_message_date: Optional[date] = None
+            if raw_message_date:
+                try:
+                    parsed_message_date = datetime.fromisoformat(
+                        raw_message_date.replace("Z", "+00:00")
+                    ).date()
+                except Exception:
+                    parsed_message_date = None
+
+            if not source_id and stored_message and parsed_message_date:
+                inferred_id = stable_message_id(stored_message, parsed_message_date)
+                if inferred_id in valid_source_ids:
+                    source_id = inferred_id
+
             if (
                 doc_id.startswith("automation_state_announcement_backfill")
                 or source_id.startswith("automation_state_announcement_backfill")
@@ -281,12 +299,17 @@ def cleanup_legacy_announcement_documents(
                 elif doc_id != source_id:
                     # Preserve the old data at the deterministic ID before deleting
                     # the legacy auto-ID copy. AI repair will overwrite it later.
+                    migrate_fields = dict(fields)
+                    if "messageDate" in migrate_fields:
+                        migrate_fields["createdAt"] = migrate_fields["messageDate"]
+                    migrate_fields["sourceMessageId"] = {"stringValue": source_id}
+
                     create = firestore_request(
                         "POST",
                         base,
                         params={"key": FIREBASE_API_KEY, "documentId": source_id},
                         id_token=id_token,
-                        json_body={"fields": fields},
+                        json_body={"fields": migrate_fields},
                         timeout=30,
                         attempts=2,
                     )
