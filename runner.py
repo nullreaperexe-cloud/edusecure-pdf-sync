@@ -355,11 +355,18 @@ def main() -> int:
     print(f"Existing semantic EduSecure duplicate keys loaded: {len(existing_semantic_keys)}")
 
     try:
-        existing_announcement_ids = announcements.list_existing_source_ids(id_token)
+        existing_announcement_ids, latest_announcement_date = announcements.load_existing_state(id_token)
     except Exception as exc:
         print(f"Could not read existing announcements: {exc}")
         existing_announcement_ids = set()
+        latest_announcement_date = None
+
+    announcement_cutoff = latest_announcement_date or (TODAY - timedelta(days=1))
     print(f"Existing announcement source IDs loaded: {len(existing_announcement_ids)}")
+    print(
+        "Announcement scan cutoff: "
+        f"{announcement_cutoff.isoformat()} (same-day messages remain eligible and are deduplicated by sourceMessageId)"
+    )
 
     report: Dict[str, Any] = {
         "cutoff": cutoff.isoformat(),
@@ -427,13 +434,20 @@ def main() -> int:
                 print("Undated message -> skip")
                 continue
 
-            # If Firestore already has PDFs for the cutoff date, still scan that
-            # same date: a later school message may contain a new PDF. URL
-            # deduplication below prevents re-uploading older same-day PDFs.
-            is_older = msg_date < cutoff if latest_date else msg_date <= cutoff
-            if is_older:
+            # PDF and Announcement freshness are intentionally separate.
+            # PDF keeps the website-first strict cutoff. Announcements keep
+            # same-day messages eligible and rely on stable sourceMessageId dedupe.
+            pdf_date_eligible = not (
+                msg_date < cutoff if latest_date else msg_date <= cutoff
+            )
+            announcement_date_eligible = msg_date >= announcement_cutoff
+
+            if not pdf_date_eligible and not announcement_date_eligible:
                 old_confirmations += 1
-                print(f"Reached older date {msg_date.isoformat()} (cutoff {cutoff.isoformat()}); skipping")
+                print(
+                    f"Reached message older than both cutoffs: {msg_date.isoformat()} "
+                    f"(PDF cutoff {cutoff.isoformat()}, announcement cutoff {announcement_cutoff.isoformat()})"
+                )
                 if old_confirmations >= 4:
                     break
                 continue
@@ -456,6 +470,11 @@ def main() -> int:
             legacy.restore_app_after_pdf(driver, app_handle)
 
             if not pdf_url:
+                if not announcement_date_eligible:
+                    print("No PDF attachment, but message is older than announcement live-scan cutoff -> skip")
+                    legacy.return_dashboard_and_restore_v25(driver, app_handle, saved_position)
+                    continue
+
                 print("No PDF attachment -> routing message to Announcements")
                 status, announcement_item = announcements.process_no_attachment_message(
                     message_text=message_text,
@@ -482,6 +501,15 @@ def main() -> int:
                 continue
 
             report["attachments_found"] += 1
+
+            if not pdf_date_eligible:
+                print(
+                    "Attachment found, but it is same-date/older than the strict PDF cutoff -> "
+                    "leave it in existing PDF history and do not create an Announcement."
+                )
+                legacy.return_dashboard_and_restore_v25(driver, app_handle, saved_position)
+                continue
+
             normalized = clean(pdf_url).lower()
             if normalized in existing_urls:
                 report["duplicates_skipped"] += 1
