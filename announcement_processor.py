@@ -13,7 +13,7 @@ import title_cleaner as intelligence
 FIREBASE_PROJECT_ID = intelligence.FIREBASE_PROJECT_ID
 FIREBASE_API_KEY = intelligence.FIREBASE_API_KEY
 ANNOUNCEMENTS_COLLECTION = "announcements"
-BACKFILL_STATE_DOCUMENT = "__announcement_backfill_v2_ai__"
+BACKFILL_STATE_DOCUMENT = "automation_state_announcement_backfill_v2_ai"
 
 ALLOWED_CATEGORIES = (
     "Tests",
