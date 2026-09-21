@@ -27,6 +27,45 @@ def _iter_evidence(evidence: Any) -> Iterable[str]:
     return [value] if value else []
 
 
+
+def _final_title_cleanup(value: Any, subject: Any = "") -> str:
+    """Hard post-filter: AI output can never bypass title safety rules."""
+    text = intelligence.sanitize_title(value, subject)
+
+    # Remove ordinary dates in addition to the session/year cleanup already
+    # provided by title_cleaner.sanitize_title().
+    months = (
+        r"Jan(?:uary)?|Feb(?:ruary)?|Mar(?:ch)?|Apr(?:il)?|May|Jun(?:e)?|"
+        r"Jul(?:y)?|Aug(?:ust)?|Sep(?:t(?:ember)?)?|Oct(?:ober)?|"
+        r"Nov(?:ember)?|Dec(?:ember)?"
+    )
+    text = re.sub(
+        rf"\b(?:{months})\s+\d{{1,2}}(?:st|nd|rd|th)?(?:,)?\s+20\d{{2}}\b",
+        " ",
+        text,
+        flags=re.I,
+    )
+    text = re.sub(
+        rf"\b\d{{1,2}}(?:st|nd|rd|th)?\s+(?:{months})(?:,)?\s+20\d{{2}}\b",
+        " ",
+        text,
+        flags=re.I,
+    )
+    text = re.sub(r"\b20\d{2}[-/.]\d{1,2}[-/.]\d{1,2}\b", " ", text)
+    text = re.sub(r"\b\d{1,2}[-/.]\d{1,2}[-/.]20\d{2}\b", " ", text)
+    text = re.sub(
+        r"\b(?:Monday|Tuesday|Wednesday|Thursday|Friday|Saturday|Sunday)\b",
+        " ",
+        text,
+        flags=re.I,
+    )
+
+    text = intelligence.sanitize_title(text, subject)
+    text = re.sub(r"\s+", " ", text).strip(" -:|,.;")
+    return text or "Study Material"
+
+
+
 def generate_title(evidence: Any, subject: Any = "", fallback_title: Any = "") -> str:
     """Return a short AI title using only OpenRouter's free router.
 
@@ -37,7 +76,7 @@ def generate_title(evidence: Any, subject: Any = "", fallback_title: Any = "") -
     - Any API/rate-limit/format error falls back to the existing deterministic cleaner.
     """
     canonical_subject = intelligence.normalize_subject(subject)
-    fallback = intelligence.sanitize_title(
+    fallback = _final_title_cleanup(
         fallback_title or "Study Material",
         canonical_subject,
     )
@@ -127,7 +166,7 @@ def generate_title(evidence: Any, subject: Any = "", fallback_title: Any = "") -
                 )
                 answer = answer.splitlines()[0] if answer else ""
                 answer = answer.strip(" \t\r\n\"'*_#-:")
-                result = intelligence.sanitize_title(answer, canonical_subject)
+                result = _final_title_cleanup(answer, canonical_subject)
 
                 # Do not let vague/model-chatter responses replace a good local title.
                 if (
