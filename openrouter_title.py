@@ -29,30 +29,37 @@ def _iter_evidence(evidence: Any) -> Iterable[str]:
 
 
 
-def _final_title_cleanup(value: Any, subject: Any = "") -> str:
-    """Hard post-filter: AI output can never bypass title safety rules."""
+def _strip_title_dates(value: Any) -> str:
+    """Remove display dates from titles without touching academic numbers like Exercise 7.2."""
     text = _clean(value)
-
-    # Remove dates BEFORE the normal sanitizer changes punctuation/separators.
     months = (
         r"Jan(?:uary)?|Feb(?:ruary)?|Mar(?:ch)?|Apr(?:il)?|May|Jun(?:e)?|"
         r"Jul(?:y)?|Aug(?:ust)?|Sep(?:t(?:ember)?)?|Oct(?:ober)?|"
         r"Nov(?:ember)?|Dec(?:ember)?"
     )
+
+    # Date:/Dated prefixes.
+    text = re.sub(r"\b(?:date|dated)\s*[:\-]?\s*", " ", text, flags=re.I)
+
+    # Month-name dates, with or without a year.
     text = re.sub(
-        rf"\b(?:{months})\s+\d{{1,2}}(?:st|nd|rd|th)?(?:,)?\s+20\d{{2}}\b",
+        rf"\b(?:{months})\s+\d{{1,2}}(?:st|nd|rd|th)?(?:,)?(?:\s+20\d{{2}})?\b",
         " ",
         text,
         flags=re.I,
     )
     text = re.sub(
-        rf"\b\d{{1,2}}(?:st|nd|rd|th)?\s+(?:{months})(?:,)?\s+20\d{{2}}\b",
+        rf"\b\d{{1,2}}(?:st|nd|rd|th)?\s+(?:of\s+)?(?:{months})(?:,)?(?:\s+20\d{{2}})?\b",
         " ",
         text,
         flags=re.I,
     )
+
+    # Numeric dates. Require 3 components so Exercise 7.2 is never removed.
     text = re.sub(r"\b20\d{2}[-/.]\d{1,2}[-/.]\d{1,2}\b", " ", text)
-    text = re.sub(r"\b\d{1,2}[-/.]\d{1,2}[-/.]20\d{2}\b", " ", text)
+    text = re.sub(r"\b\d{1,2}[-/.]\d{1,2}[-/.](?:20)?\d{2}\b", " ", text)
+
+    # Weekdays are display metadata, not title content.
     text = re.sub(
         r"\b(?:Monday|Tuesday|Wednesday|Thursday|Friday|Saturday|Sunday)\b",
         " ",
@@ -60,8 +67,25 @@ def _final_title_cleanup(value: Any, subject: Any = "") -> str:
         flags=re.I,
     )
 
-    # Now apply the mature deterministic cleaner as the final safety gate.
+    # Session/academic-year forms.
+    text = re.sub(
+        r"\b(?:academic\s+)?session\s*[:\-]?\s*20\d{2}\s*[-/]\s*(?:20)?\d{2}\b",
+        " ",
+        text,
+        flags=re.I,
+    )
+    text = re.sub(r"\b20\d{2}\s*[-/]\s*(?:20)?\d{2}\b", " ", text)
+
+    return re.sub(r"\s+", " ", text).strip(" -:|,.;")
+
+
+def _final_title_cleanup(value: Any, subject: Any = "") -> str:
+    """Hard post-filter: AI output can never bypass title/date safety rules."""
+    text = _strip_title_dates(value)
     text = intelligence.sanitize_title(text, subject)
+
+    # Run date removal AGAIN after sanitizer normalization.
+    text = _strip_title_dates(text)
     text = re.sub(r"\s+", " ", text).strip(" -:|,.;")
     return text or "Study Material"
 
@@ -255,12 +279,16 @@ def generate_announcement_metadata(evidence: Any, allowed_categories: Iterable[s
         "Holidays for closures/holidays; Timetable for timetable/schedule changes; Results for results/marks; "
         "Activities for school/class activities or bring-material instructions; Competitions for competitions/olympiads; "
         "Important only for important action that fits no better category; General otherwise. "
+        "Do NOT default to Tests. If the actual prose does not clearly announce a test or quiz, Tests is wrong. "
+        "Examples: 'bring chart paper tomorrow' => Activities; 'submit model by Friday' => Projects or Assignments based on wording; "
+        "'school closed tomorrow' => Holidays; 'PTM timing changed' => Events; 'revised exam schedule' => Timetable; "
+        "'result declared' => Results; 'complete worksheet at home' => Homework; ordinary information => General. "
         "priority must be exactly normal, important, or urgent. Use urgent very rarely. Do not invent facts."
     )
 
     user_prompt = (
         "Allowed categories (choose EXACTLY one): " + ", ".join(categories)
-        + "\\nAllowed subjects (choose EXACTLY one): " + ", ".join(allowed_subjects)
+        + "\nAllowed subjects (choose EXACTLY one): " + ", ".join(allowed_subjects)
         + "\n\nBEGIN UNTRUSTED EDUSecure DATA\n" + source_text
         + "\nEND UNTRUSTED EDUSecure DATA\n\nReturn JSON only."
     )
