@@ -92,8 +92,7 @@ def load_existing_state(id_token: str) -> Tuple[Set[str], Optional[date]]:
         for raw in body.get("documents", []):
             fields = raw.get("fields") or {}
             source_id = clean(decode_value(fields.get("sourceMessageId") or {}))
-            if source_id and not source_id.startswith("__announcement_backfill"):
-                source_ids.add(source_id)
+            if (\n                source_id\n                and source_id != BACKFILL_STATE_DOCUMENT\n                and not source_id.startswith("__announcement_backfill")\n                and not source_id.startswith("automation_state_announcement_backfill")\n            ):\n                source_ids.add(source_id)
 
             raw_date = clean(decode_value(fields.get("messageDate") or {}))
             if raw_date:
