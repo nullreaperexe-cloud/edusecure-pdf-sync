@@ -19,14 +19,15 @@ def list_existing_announcements(id_token: str) -> List[Dict[str, Any]]:
         f"https://firestore.googleapis.com/v1/projects/{announcements.FIREBASE_PROJECT_ID}"
         f"/databases/(default)/documents/{announcements.ANNOUNCEMENTS_COLLECTION}"
     )
-    params: Dict[str, Any] = {"pageSize": 1000, "key": announcements.FIREBASE_API_KEY}
+    params: Dict[str, Any] = {"pageSize": 200, "key": announcements.FIREBASE_API_KEY}
     docs: List[Dict[str, Any]] = []
 
     while True:
-        response = requests.get(
+        response = announcements.firestore_request(
+            "GET",
             base,
             params=params,
-            headers=announcements.firestore_headers(id_token),
+            id_token=id_token,
             timeout=30,
         )
         if response.status_code == 404:
@@ -87,11 +88,12 @@ def patch_ai_fields(document_name: str, ai_meta: Dict[str, str], id_token: str) 
         ("updateMask.fieldPaths", "aiModel"),
         ("updateMask.fieldPaths", "aiProcessedAt"),
     ]
-    response = requests.patch(
+    response = announcements.firestore_request(
+        "PATCH",
         f"https://firestore.googleapis.com/v1/{document_name}",
         params=params,
-        headers=announcements.firestore_headers(id_token),
-        json={"fields": fields},
+        id_token=id_token,
+        json_body={"fields": fields},
         timeout=30,
     )
     if response.ok:
