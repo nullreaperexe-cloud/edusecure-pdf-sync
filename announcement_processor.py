@@ -550,6 +550,46 @@ def delete_announcement_claim(source_id: str, id_token: str) -> None:
 
 
 
+
+def patch_announcement_dates(
+    source_id: str,
+    message_date: Optional[date],
+    id_token: str,
+) -> bool:
+    """Repair website ordering using EduSecure arrival date without reading the collection."""
+    if not source_id or not message_date:
+        return False
+
+    message_ts = datetime(
+        message_date.year,
+        message_date.month,
+        message_date.day,
+        tzinfo=timezone.utc,
+    ).isoformat().replace("+00:00", "Z")
+
+    params = [
+        ("key", FIREBASE_API_KEY),
+        ("updateMask.fieldPaths", "messageDate"),
+        ("updateMask.fieldPaths", "createdAt"),
+    ]
+    response = firestore_request(
+        "PATCH",
+        f"https://firestore.googleapis.com/v1/{announcement_document_name(source_id)}",
+        params=params,
+        id_token=id_token,
+        json_body={
+            "fields": {
+                "messageDate": {"timestampValue": message_ts},
+                "createdAt": {"timestampValue": message_ts},
+            }
+        },
+        timeout=25,
+        attempts=2,
+    )
+    return response.ok
+
+
+
 def upload_announcement(
     item: Dict[str, Any],
     message_date: Optional[date],
@@ -578,6 +618,19 @@ def upload_announcement(
         if response.ok:
             print(f"✅ Announcement refreshed: {clean(item.get('title'))}")
             return True
+
+        if response.status_code == 404:
+            response = firestore_request(
+                "POST",
+                collection_url,
+                params={"key": FIREBASE_API_KEY, "documentId": source_id},
+                id_token=id_token,
+                json_body={"fields": fields},
+                timeout=30,
+            )
+            if response.ok or response.status_code == 409:
+                print(f"✅ Announcement created during historical repair: {clean(item.get('title'))}")
+                return True
     else:
         response = firestore_request(
             "POST",
