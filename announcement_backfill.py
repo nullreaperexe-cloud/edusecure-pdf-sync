@@ -36,6 +36,10 @@ def main() -> int:
         print("Firebase admin sign-in failed; historical repair will not run.")
         return 2
 
+    if announcements.backfill_completed(id_token):
+        print("Final batch repair already completed ✅")
+        return 0
+
     print("=== HISTORICAL EDUSecure ANNOUNCEMENT BATCH AI REPAIR ===")
     print("No announcements collection listing.")
     print("Dates/order are repaired directly from EduSecure message dates.")
@@ -261,6 +265,9 @@ def main() -> int:
         print(f"Reached EduSecure history bottom: {reached_bottom}")
 
         if reached_bottom and failures == 0 and ai_retries == 0:
+            if not announcements.mark_backfill_completed(id_token, scanned, repaired):
+                print("Repair succeeded but completion state could not be saved.")
+                return 1
             print("Historical announcement batch AI repair complete ✅")
             return 0
 
