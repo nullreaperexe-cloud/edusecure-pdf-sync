@@ -55,6 +55,7 @@ def main() -> int:
     date_repairs = 0
 
     pending: List[Dict[str, Any]] = []
+    valid_source_ids: Set[str] = set()
 
     try:
         driver.get(runner.START_URL)
@@ -131,6 +132,11 @@ def main() -> int:
 
             if not announcements.useful_announcement(message_text):
                 ignored += 1
+                stale_id = announcements.stable_message_id(message_text, msg_date)
+                try:
+                    announcements.delete_announcement_claim(stale_id, id_token)
+                except Exception:
+                    pass
                 runner.legacy.return_dashboard_and_restore_v25(
                     driver,
                     app_handle,
@@ -139,6 +145,7 @@ def main() -> int:
                 continue
 
             source_id = announcements.stable_message_id(message_text, msg_date)
+            valid_source_ids.add(source_id)
 
             # Fix ordering NOW, independently of OpenRouter quota.
             if msg_date and announcements.patch_announcement_dates(
@@ -170,6 +177,12 @@ def main() -> int:
         print(
             f"Historical scan complete: {len(pending)} announcements queued for batch AI."
         )
+
+        cleanup_stats = announcements.cleanup_legacy_announcement_documents(
+            valid_source_ids,
+            id_token,
+        )
+        print(f"Legacy cleanup stats: {cleanup_stats}")
 
         repaired = 0
         ai_retries = 0
