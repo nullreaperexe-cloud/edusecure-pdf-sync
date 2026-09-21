@@ -2,11 +2,10 @@ name: One-time Reverse Existing Announcements
 
 on:
   workflow_dispatch:
-  push:
-    branches:
-      - main
-    paths:
-      - ".github/workflows/one-time-reverse-announcements.yml"
+  schedule:
+    # Retry after Firestore free daily quota reset. The script has a completion
+    # marker, so the reversal mutation can succeed only once.
+    - cron: "15 7 * * *"
 
 permissions:
   contents: read
