@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
   schedule:
     # Daily retry after the free OpenRouter allowance has a chance to reset.
-    - cron: "23 0 * * *"
+    - cron: "5 0 * * *"
   push:
     branches:
       - main
