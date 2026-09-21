@@ -29,12 +29,14 @@ def main() -> int:
 
     try:
         existing_source_ids = announcements.list_existing_source_ids(id_token)
+        existing_document_map = announcements.load_existing_document_map(id_token)
     except Exception as exc:
         print(f"Could not read existing announcements: {exc}")
         return 2
 
-    print("=== HISTORICAL EDUSecure ANNOUNCEMENT BACKFILL ===")
+    print("=== HISTORICAL EDUSecure ANNOUNCEMENT AI REFRESH + BACKFILL ===")
     print(f"Existing announcement source IDs: {len(existing_source_ids)}")
+    print(f"Existing announcement documents available for AI refresh: {len(existing_document_map)}")
     print("Rule: messages WITH attachments stay in PDF flow; messages WITHOUT attachments may become announcements.")
 
     driver = runner.legacy.make_driver()
@@ -46,6 +48,7 @@ def main() -> int:
     opened = 0
     attachment_messages = 0
     created = 0
+    refreshed = 0
     duplicates = 0
     ignored = 0
     ai_retries = 0
@@ -126,16 +129,32 @@ def main() -> int:
                 )
                 continue
 
-            status, _item = announcements.process_no_attachment_message(
-                message_text=message_text,
-                detail_text=detail_text,
-                message_date=msg_date,
-                id_token=id_token,
-                existing_source_ids=existing_source_ids,
-            )
+            source_id = announcements.stable_message_id(message_text, msg_date)
+            existing_document = existing_document_map.get(source_id, "")
+
+            if existing_document:
+                print("Existing announcement found -> refreshing title/category/subject/priority with OpenRouter AI")
+                status, _item = announcements.refresh_existing_announcement(
+                    message_text=message_text,
+                    detail_text=detail_text,
+                    message_date=msg_date,
+                    id_token=id_token,
+                    document_name=existing_document,
+                )
+            else:
+                status, _item = announcements.process_no_attachment_message(
+                    message_text=message_text,
+                    detail_text=detail_text,
+                    message_date=msg_date,
+                    id_token=id_token,
+                    existing_source_ids=existing_source_ids,
+                )
 
             if status == "created":
                 created += 1
+                existing_source_ids.add(source_id)
+            elif status == "refreshed":
+                refreshed += 1
             elif status == "duplicate":
                 duplicates += 1
             elif status == "ignored":
@@ -157,6 +176,7 @@ def main() -> int:
         print(f"Messages opened: {opened}")
         print(f"Attachment/PDF messages skipped: {attachment_messages}")
         print(f"Announcements created: {created}")
+        print(f"Existing announcements AI-refreshed: {refreshed}")
         print(f"Announcement duplicates skipped: {duplicates}")
         print(f"Useless messages ignored: {ignored}")
         print(f"AI retries postponed: {ai_retries}")
@@ -164,7 +184,7 @@ def main() -> int:
         print(f"Reached EduSecure history bottom: {reached_bottom}")
 
         if reached_bottom and failures == 0 and ai_retries == 0:
-            if announcements.mark_backfill_completed(id_token, scanned, created):
+            if announcements.mark_backfill_completed(id_token, scanned, created + refreshed):
                 print("Historical announcement backfill marked complete ✅")
                 return 0
             print("Could not save backfill completion state.")
