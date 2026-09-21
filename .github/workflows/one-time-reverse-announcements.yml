@@ -1,0 +1,45 @@
+name: One-time Reverse Existing Announcements
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+    paths:
+      - ".github/workflows/one-time-reverse-announcements.yml"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: one-time-reverse-existing-announcements
+  cancel-in-progress: false
+
+jobs:
+  reverse:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v5
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install dependencies
+        run: python -m pip install -r requirements.txt
+
+      - name: Validate one-time reversal
+        run: |
+          python -m py_compile one_time_reverse_announcements.py openrouter_title.py announcement_processor.py runner.py
+          python -m unittest -v test_announcements.py
+
+      - name: Reverse existing announcements once
+        env:
+          PYTHONUNBUFFERED: "1"
+          FIREBASE_ADMIN_PASSWORD: ${{ secrets.FIREBASE_ADMIN_PASSWORD }}
+        run: python one_time_reverse_announcements.py
