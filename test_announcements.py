@@ -82,5 +82,53 @@ class AnnouncementProcessorTests(unittest.TestCase):
         )
 
 
+    def test_dash_separated_title_date_is_stripped(self):
+        title = ai_title._final_title_cleanup(
+            "Aug 27 - 2026 - School Excursion Educational Trip",
+            "General",
+        )
+        self.assertEqual(title, "School Excursion Educational Trip")
+        self.assertNotIn("2026", title)
+        self.assertNotIn("Aug", title)
+
+    def test_model_chatter_title_is_rejected(self):
+        title = ai_title._final_title_cleanup(
+            "The user wants a clean title for a Class 8 study-material library",
+            "General",
+        )
+        self.assertEqual(title, "")
+
+    def test_impossible_tests_category_is_rejected(self):
+        parsed = {
+            "title": "PTM Reminder",
+            "category": "Tests",
+            "subject": "General",
+            "priority": "normal",
+        }
+        result = ai_title._validate_announcement_meta(
+            parsed,
+            "Kindly attend PTM tomorrow to discuss the academic report.",
+            list(announcements.ALLOWED_CATEGORIES),
+            "free-model",
+        )
+        self.assertIsNone(result)
+
+    def test_real_test_category_can_pass_validation(self):
+        parsed = {
+            "title": "Computer Revision Test",
+            "category": "Tests",
+            "subject": "Computer",
+            "priority": "normal",
+        }
+        result = ai_title._validate_announcement_meta(
+            parsed,
+            "Prepare for the Computer revision test. Syllabus Chapters 8 and 11.",
+            list(announcements.ALLOWED_CATEGORIES),
+            "free-model",
+        )
+        self.assertIsNotNone(result)
+        self.assertEqual(result["category"], "Tests")
+
+
 if __name__ == "__main__":
     unittest.main()
