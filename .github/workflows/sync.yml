@@ -11,6 +11,9 @@ on:
       - "sync_repair.py"
       - "title_cleaner.py"
       - "openrouter_title.py"
+      - "announcement_processor.py"
+      - "announcement_backfill.py"
+      - "test_announcements.py"
       - "test_title_intelligence.py"
       - "requirements.txt"
       - ".github/workflows/sync.yml"
@@ -47,8 +50,8 @@ jobs:
 
       - name: Validate automation code
         run: |
-          python -m py_compile runner.py sync.py sync_repair.py title_cleaner.py openrouter_title.py
-          python -m unittest -v test_title_intelligence.py
+          python -m py_compile runner.py sync.py sync_repair.py title_cleaner.py openrouter_title.py announcement_processor.py announcement_backfill.py
+          python -m unittest -v test_title_intelligence.py test_announcements.py
 
       - name: Run EduSecure monitor every 5 minutes
         env:
