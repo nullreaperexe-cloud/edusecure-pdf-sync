@@ -14,6 +14,7 @@ from selenium.common.exceptions import WebDriverException
 
 import sync as legacy
 import title_cleaner as intelligence
+import openrouter_title as ai_title
 
 START_URL = legacy.START_URL
 FIREBASE_PROJECT_ID = "academyvault-5d1eb"
@@ -465,7 +466,7 @@ def main() -> int:
             initially_detected = normalize_subject_name(
                 legacy.detect_subject(detail_text or message_text)
             )
-            item = intelligence.finalize_material_fields(
+            base_item = intelligence.finalize_material_fields(
                 {
                     "title": extracted_title,
                     "subject": initially_detected,
@@ -474,6 +475,20 @@ def main() -> int:
                     "_evidence": original_evidence,
                 }
             )
+
+            # Generate the NEW material title with OpenRouter's free router only.
+            # If OpenRouter is unavailable/rate-limited, ai_title.generate_title()
+            # returns the existing deterministic clean title so syncing continues.
+            generated_title = ai_title.generate_title(
+                original_evidence,
+                subject=base_item["subject"],
+                fallback_title=base_item["title"],
+            )
+            item = {
+                **base_item,
+                "title": generated_title,
+                "description": generated_title,
+            }
 
             semantic_key = intelligence.semantic_duplicate_key(
                 msg_date,
