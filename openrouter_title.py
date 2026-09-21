@@ -100,10 +100,10 @@ def generate_title(evidence: Any, subject: Any = "", fallback_title: Any = "") -
         return fallback
 
     system_prompt = (
-        "You write titles for a Class 8 study-material library. "
+        "You write titles for the 8aPDF Class 8 school library. The item may be a PDF study material or a school announcement. "
         "Return exactly ONE short title only. No quotes, markdown, label, or explanation. "
         "Use correct English grammar and be straight to the point. Preserve the real "
-        "topic, chapter, exercise, worksheet, passage, correction, assignment, or notice. "
+        "topic, chapter, exercise, worksheet, passage, correction, assignment, test, event, instruction, or notice. "
         "Never include any date, day/month/year, session or academic year, school name, "
         "school code, Dear Student/Students/Parent/Parents, greetings, PFA, Attachment, "
         "Pay Now, Download, Preview, Circular, Circular No., message-type labels, "
