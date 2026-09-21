@@ -23,7 +23,9 @@ permissions:
 
 concurrency:
   group: edusecure-24x7-worker
-  cancel-in-progress: false
+  # A code push deploys immediately by replacing the old worker.
+  # Scheduled/watchdog/dispatch runs never kill a healthy active worker.
+  cancel-in-progress: ${{ github.event_name == 'push' }}
 
 jobs:
   sync:
