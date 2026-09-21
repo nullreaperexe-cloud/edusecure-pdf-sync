@@ -137,6 +137,13 @@ def _final_title_cleanup(value: Any, subject: Any = "") -> str:
     text = _strip_title_dates(raw)
     text = intelligence.sanitize_title(text, subject)
     text = _strip_title_dates(text)
+
+    # EduSecure UI labels must never survive in a visible title.
+    text = re.sub(r"\bClass\s*Test\s*More\b", " ", text, flags=re.I)
+    text = re.sub(r"\bTest\s*More\b", " ", text, flags=re.I)
+    text = re.sub(r"\bClass\s*Test\b", " ", text, flags=re.I)
+    text = re.sub(r"\bMore\b", " ", text, flags=re.I)
+
     text = re.sub(r"\s+", " ", text).strip(" -:|,.;")
 
     if _title_is_model_chatter(text):
