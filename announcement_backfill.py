@@ -11,6 +11,7 @@ import sync_repair as repair
 
 
 MAX_MESSAGES = int(os.environ.get("ANNOUNCEMENT_BACKFILL_MAX_MESSAGES", "2000"))
+AI_CALL_DELAY_SECONDS = float(os.environ.get("ANNOUNCEMENT_AI_DELAY_SECONDS", "4.0"))
 
 
 def main() -> int:
@@ -149,6 +150,10 @@ def main() -> int:
                     id_token=id_token,
                     existing_source_ids=existing_source_ids,
                 )
+
+            if status in {"created", "refreshed", "retry"}:
+                # Pace OpenRouter free requests to avoid burst rate limits.
+                time.sleep(AI_CALL_DELAY_SECONDS)
 
             if status == "created":
                 created += 1
