@@ -238,7 +238,13 @@ def mark_backfill_completed(id_token: str, scanned: int, created: int) -> bool:
         "description": {"stringValue": "Internal automation state"},
         "category": {"stringValue": "General"},
         "subject": {"stringValue": "General"},
-        "createdAt": {"timestampValue": now},
+        # Website sorts by createdAt, so make it the EduSecure arrival date,
+        # never the later GitHub/backfill upload time.
+        "createdAt": (
+            {"timestampValue": message_ts}
+            if message_date
+            else {"timestampValue": now}
+        ),
         "priority": {"stringValue": "normal"},
         "published": {"booleanValue": False},
         "sourceMessageId": {"stringValue": BACKFILL_STATE_DOCUMENT},
@@ -408,6 +414,96 @@ def _announcement_fields(
     }
 
 
+
+def announcement_document_name(source_id: str) -> str:
+    return (
+        f"projects/{FIREBASE_PROJECT_ID}/databases/(default)/documents/"
+        f"{ANNOUNCEMENTS_COLLECTION}/{source_id}"
+    )
+
+
+def claim_announcement(
+    source_id: str,
+    message_date: Optional[date],
+    id_token: str,
+) -> str:
+    """Atomically reserve a new message before spending an OpenRouter call."""
+    if not source_id:
+        return "failed"
+
+    now = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+    if message_date:
+        message_ts = datetime(
+            message_date.year,
+            message_date.month,
+            message_date.day,
+            tzinfo=timezone.utc,
+        ).isoformat().replace("+00:00", "Z")
+        message_date_value: Dict[str, Any] = {"timestampValue": message_ts}
+        sort_ts = message_ts
+    else:
+        message_date_value = {"nullValue": None}
+        sort_ts = now
+
+    fields = {
+        "title": {"stringValue": "Processing Announcement"},
+        "description": {"stringValue": ""},
+        "category": {"stringValue": "General"},
+        "subject": {"stringValue": "General"},
+        "messageDate": message_date_value,
+        "eventDate": {"nullValue": None},
+        "createdAt": {"timestampValue": sort_ts},
+        "priority": {"stringValue": "normal"},
+        "published": {"booleanValue": False},
+        "sourceMessageId": {"stringValue": source_id},
+        "hasAttachment": {"booleanValue": False},
+        "attachmentUrl": {"stringValue": ""},
+        "aiStatus": {"stringValue": "processing"},
+    }
+
+    collection_url = (
+        f"https://firestore.googleapis.com/v1/projects/{FIREBASE_PROJECT_ID}"
+        f"/databases/(default)/documents/{ANNOUNCEMENTS_COLLECTION}"
+    )
+    response = firestore_request(
+        "POST",
+        collection_url,
+        params={"key": FIREBASE_API_KEY, "documentId": source_id},
+        id_token=id_token,
+        json_body={"fields": fields},
+        timeout=30,
+    )
+
+    if response.ok:
+        return "claimed"
+    if response.status_code == 409:
+        return "existing"
+
+    print(f"Announcement claim failed: HTTP {response.status_code}")
+    return "failed"
+
+
+def delete_announcement_claim(source_id: str, id_token: str) -> None:
+    if not source_id:
+        return
+    url = (
+        f"https://firestore.googleapis.com/v1/"
+        f"{announcement_document_name(source_id)}"
+    )
+    try:
+        firestore_request(
+            "DELETE",
+            url,
+            params={"key": FIREBASE_API_KEY},
+            id_token=id_token,
+            timeout=25,
+            attempts=3,
+        )
+    except Exception:
+        pass
+
+
+
 def upload_announcement(
     item: Dict[str, Any],
     message_date: Optional[date],
@@ -492,23 +588,39 @@ def process_no_attachment_message(
     id_token: str,
     existing_source_ids: Set[str],
 ) -> Tuple[str, Optional[Dict[str, Any]]]:
-    """Process exactly one no-attachment EduSecure message.
-
-    Returns status: created / duplicate / ignored / failed
-    """
+    """Process one live no-attachment message without listing the collection."""
     source_id = stable_message_id(message_text, message_date)
+
     if source_id in existing_source_ids:
         print("Duplicate announcement sourceMessageId -> skip")
         return "duplicate", None
 
+    claim_status = claim_announcement(source_id, message_date, id_token)
+    if claim_status == "existing":
+        existing_source_ids.add(source_id)
+        print("Announcement document already exists -> skip before AI call")
+        return "duplicate", None
+    if claim_status != "claimed":
+        return "failed", None
+
     item = build_announcement(message_text, detail_text, message_date)
     if not item:
         print("Message has no useful announcement content -> ignore")
+        delete_announcement_claim(source_id, id_token)
         return "ignored", None
     if item.get("_retry"):
+        delete_announcement_claim(source_id, id_token)
         return "retry", None
 
-    if upload_announcement(item, message_date, id_token):
+    item["sourceMessageId"] = source_id
+    if upload_announcement(
+        item,
+        message_date,
+        id_token,
+        existing_document_name=announcement_document_name(source_id),
+    ):
         existing_source_ids.add(source_id)
         return "created", item
+
+    delete_announcement_claim(source_id, id_token)
     return "failed", item
