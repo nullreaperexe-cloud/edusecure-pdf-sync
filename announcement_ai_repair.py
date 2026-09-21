@@ -9,6 +9,8 @@ import announcement_processor as announcements
 import openrouter_title as ai_title
 import runner
 
+AI_CALL_DELAY_SECONDS = 4.0
+
 
 def clean(value: Any) -> str:
     return announcements.clean(value)
@@ -133,6 +135,9 @@ def main() -> int:
             evidence,
             announcements.ALLOWED_CATEGORIES,
         )
+        # Pace free OpenRouter requests so maintenance never floods the free route.
+        import time
+        time.sleep(AI_CALL_DELAY_SECONDS)
         if not ai_meta:
             retries += 1
             print(f"[{checked}] AI unavailable -> left unchanged for retry")
