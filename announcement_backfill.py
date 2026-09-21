@@ -24,22 +24,10 @@ def main() -> int:
         print("Firebase admin sign-in failed; historical backfill will not run.")
         return 2
 
-    if announcements.backfill_completed(id_token):
-        print("Historical announcement backfill already completed ✅")
-        return 0
-
-    try:
-        existing_source_ids = announcements.list_existing_source_ids(id_token)
-        existing_document_map = announcements.load_existing_document_map(id_token)
-    except Exception as exc:
-        print(f"Could not read existing announcements: {exc}")
-        return 2
-
-    print("=== HISTORICAL EDUSecure ANNOUNCEMENT AI REFRESH + BACKFILL ===")
-    print(f"Existing announcement source IDs: {len(existing_source_ids)}")
-    print(f"Existing announcement documents available for AI refresh: {len(existing_document_map)}")
+    print("=== HISTORICAL EDUSecure ANNOUNCEMENT AI REPAIR + BACKFILL ===")
+    print("Read-free mode: no announcements collection listing before repair.")
+    print("Each EduSecure message is upserted by its deterministic sourceMessageId.")
     print("Rule: messages WITH attachments stay in PDF flow; messages WITHOUT attachments may become announcements.")
-
     driver = runner.legacy.make_driver()
     processed: Set[str] = set()
     bottom_confirmations = 0
@@ -48,8 +36,7 @@ def main() -> int:
     scanned = 0
     opened = 0
     attachment_messages = 0
-    created = 0
-    refreshed = 0
+    upserted = 0
     duplicates = 0
     ignored = 0
     ai_retries = 0
@@ -131,37 +118,33 @@ def main() -> int:
                 continue
 
             source_id = announcements.stable_message_id(message_text, msg_date)
-            existing_document = existing_document_map.get(source_id, "")
 
-            if existing_document:
-                print("Existing announcement found -> refreshing title/category/subject/priority with OpenRouter AI")
-                status, _item = announcements.refresh_existing_announcement(
-                    message_text=message_text,
-                    detail_text=detail_text,
-                    message_date=msg_date,
-                    id_token=id_token,
-                    document_name=existing_document,
-                )
+            item = announcements.build_announcement(
+                message_text=message_text,
+                detail_text=detail_text,
+                message_date=msg_date,
+            )
+
+            if not item:
+                status = "ignored"
+            elif item.get("_retry"):
+                status = "retry"
             else:
-                status, _item = announcements.process_no_attachment_message(
-                    message_text=message_text,
-                    detail_text=detail_text,
-                    message_date=msg_date,
-                    id_token=id_token,
-                    existing_source_ids=existing_source_ids,
+                item["sourceMessageId"] = source_id
+                document_name = announcements.announcement_document_name(source_id)
+                ok = announcements.upload_announcement(
+                    item,
+                    msg_date,
+                    id_token,
+                    existing_document_name=document_name,
                 )
+                status = "upserted" if ok else "failed"
 
-            if status in {"created", "refreshed", "retry"}:
-                # Pace OpenRouter free requests to avoid burst rate limits.
+            if status in {"upserted", "retry"}:
                 time.sleep(AI_CALL_DELAY_SECONDS)
 
-            if status == "created":
-                created += 1
-                existing_source_ids.add(source_id)
-            elif status == "refreshed":
-                refreshed += 1
-            elif status == "duplicate":
-                duplicates += 1
+            if status == "upserted":
+                upserted += 1
             elif status == "ignored":
                 ignored += 1
             elif status == "retry":
@@ -180,8 +163,7 @@ def main() -> int:
         print(f"Messages scanned: {scanned}")
         print(f"Messages opened: {opened}")
         print(f"Attachment/PDF messages skipped: {attachment_messages}")
-        print(f"Announcements created: {created}")
-        print(f"Existing announcements AI-refreshed: {refreshed}")
+        print(f"Announcements AI-upserted/repaired: {upserted}")
         print(f"Announcement duplicates skipped: {duplicates}")
         print(f"Useless messages ignored: {ignored}")
         print(f"AI retries postponed: {ai_retries}")
@@ -189,11 +171,8 @@ def main() -> int:
         print(f"Reached EduSecure history bottom: {reached_bottom}")
 
         if reached_bottom and failures == 0 and ai_retries == 0:
-            if announcements.mark_backfill_completed(id_token, scanned, created + refreshed):
-                print("Historical announcement backfill marked complete ✅")
-                return 0
-            print("Could not save backfill completion state.")
-            return 1
+            print("Historical announcement AI repair/backfill complete ✅")
+            return 0
 
         if not reached_bottom:
             print(
