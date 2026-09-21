@@ -317,37 +317,35 @@ def build_announcement(
     if not useful_announcement(primary):
         return None
 
-    # Dashboard message text is intentionally primary: the detail page can contain
-    # unrelated UI labels such as "Class Test More" that poison category/title logic.
     evidence = [primary]
-    if len(primary) < 40 and clean(detail_text):
-        evidence.append(clean(detail_text))
+    detail = clean(detail_text)
+    if detail and detail != primary:
+        evidence.append(detail)
 
-    subject = intelligence.detect_subject(evidence)
-    if subject in {"Circular", "General", "School Diary", "Message", "Announcement", "Notice"}:
-        subject = "General"
-
-    fallback = intelligence.sanitize_title(primary, subject)
-    title = ai_title.generate_title(
+    # OpenRouter AI is the ONLY authority for announcement title + section.
+    # If AI is unavailable/invalid, postpone instead of guessing a category.
+    ai_meta = ai_title.generate_announcement_metadata(
         evidence,
-        subject=subject,
-        fallback_title=fallback,
+        ALLOWED_CATEGORIES,
     )
+    if not ai_meta:
+        print("Announcement AI metadata unavailable -> postpone this message")
+        return {"_retry": True}
 
     description = clean_description(primary)
     if not description:
-        description = title
+        description = ai_meta["title"]
 
     return {
-        "title": title,
+        "title": ai_meta["title"],
         "description": description,
-        "category": classify_category(primary),
-        "subject": subject or "General",
-        "priority": classify_priority(primary),
+        "category": ai_meta["category"],
+        "subject": ai_meta["subject"],
+        "priority": ai_meta["priority"],
+        "aiModel": ai_meta.get("aiModel", ""),
+        "originalMessage": primary,
         "sourceMessageId": stable_message_id(message_text, message_date),
     }
-
-
 def _announcement_fields(
     item: Dict[str, Any],
     message_date: Optional[date],
@@ -378,6 +376,8 @@ def _announcement_fields(
         "sourceMessageId": {"stringValue": clean(item.get("sourceMessageId"))},
         "hasAttachment": {"booleanValue": False},
         "attachmentUrl": {"stringValue": ""},
+        "aiModel": {"stringValue": clean(item.get("aiModel"))},
+        "originalMessage": {"stringValue": clean(item.get("originalMessage"))},
     }
 
 
@@ -444,6 +444,8 @@ def refresh_existing_announcement(
     item = build_announcement(message_text, detail_text, message_date)
     if not item:
         return "ignored", None
+    if item.get("_retry"):
+        return "retry", None
     if upload_announcement(
         item,
         message_date,
@@ -474,6 +476,8 @@ def process_no_attachment_message(
     if not item:
         print("Message has no useful announcement content -> ignore")
         return "ignored", None
+    if item.get("_retry"):
+        return "retry", None
 
     if upload_announcement(item, message_date, id_token):
         existing_source_ids.add(source_id)
