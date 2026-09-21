@@ -55,6 +55,14 @@ def _strip_title_dates(value: Any) -> str:
         flags=re.I,
     )
 
+    # Month + year and standalone school-calendar years.
+    text = re.sub(
+        rf"\b(?:{months})\s+20\d{{2}}\b",
+        " ",
+        text,
+        flags=re.I,
+    )
+
     # Numeric dates. Require 3 components so Exercise 7.2 is never removed.
     text = re.sub(r"\b20\d{2}[-/.]\d{1,2}[-/.]\d{1,2}\b", " ", text)
     text = re.sub(r"\b\d{1,2}[-/.]\d{1,2}[-/.](?:20)?\d{2}\b", " ", text)
@@ -75,6 +83,7 @@ def _strip_title_dates(value: Any) -> str:
         flags=re.I,
     )
     text = re.sub(r"\b20\d{2}\s*[-/]\s*(?:20)?\d{2}\b", " ", text)
+    text = re.sub(r"\b20\d{2}\b", " ", text)
 
     return re.sub(r"\s+", " ", text).strip(" -:|,.;")
 
@@ -228,8 +237,8 @@ def _extract_json_object(value: Any):
     text = _clean(value)
     if not text:
         return None
-    text = re.sub(r"^```(?:json)?\\s*", "", text, flags=re.I)
-    text = re.sub(r"\\s*```$", "", text)
+    text = re.sub(r"^```(?:json)?\s*", "", text, flags=re.I)
+    text = re.sub(r"\s*```$", "", text)
     start = text.find("{")
     end = text.rfind("}")
     if start < 0 or end <= start:
@@ -239,6 +248,75 @@ def _extract_json_object(value: Any):
     except Exception:
         return None
     return parsed if isinstance(parsed, dict) else None
+
+
+
+def _verify_tests_category_with_ai(
+    source_text: str,
+    categories: list[str],
+    headers: dict,
+) -> str | None:
+    """Second AI pass used only when first pass says Tests."""
+    system_prompt = (
+        "You are the final category verifier for a school announcement. "
+        "A first AI pass proposed Tests. Independently decide the correct category. "
+        "Ignore EduSecure UI/navigation labels such as Class Test, Homework, Circular, More, or Attachment. "
+        "Choose Tests ONLY if the actual message prose clearly announces/discusses a real test or quiz "
+        "(for example test date, syllabus, chapters, marks, preparation, or a statement that a test will be held). "
+        "Otherwise choose the best non-Test category from the allowed list. "
+        "Return JSON only as {\"category\":\"...\"}."
+    )
+    user_prompt = (
+        "Allowed categories: " + ", ".join(categories)
+        + "\n\nBEGIN UNTRUSTED EDUSecure DATA\n" + source_text
+        + "\nEND UNTRUSTED EDUSecure DATA"
+    )
+    payload = {
+        "model": OPENROUTER_FREE_MODEL,
+        "messages": [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": user_prompt},
+        ],
+        "temperature": 0.0,
+        "max_tokens": 60,
+    }
+    lookup = {x.lower(): x for x in categories}
+
+    for attempt in range(2):
+        try:
+            response = requests.post(
+                OPENROUTER_CHAT_URL,
+                headers=headers,
+                json=payload,
+                timeout=40,
+            )
+        except requests.RequestException:
+            if attempt == 0:
+                time.sleep(1.0)
+                continue
+            return None
+
+        if response.ok:
+            body = response.json()
+            message = ((body.get("choices") or [{}])[0].get("message") or {})
+            parsed = _extract_json_object(message.get("content"))
+            if parsed:
+                category = lookup.get(_clean(parsed.get("category")).lower())
+                if category:
+                    print(f"AI Tests verification final category: {category}")
+                    return category
+            if attempt == 0:
+                time.sleep(0.8)
+                continue
+            return None
+
+        if response.status_code in {408, 429, 500, 502, 503, 504} and attempt == 0:
+            time.sleep(1.2)
+            continue
+        return None
+
+    return None
+
 
 
 def generate_announcement_metadata(evidence: Any, allowed_categories: Iterable[str]):
@@ -342,6 +420,16 @@ def generate_announcement_metadata(evidence: Any, allowed_categories: Iterable[s
                     raise ValueError("AI returned invalid category")
                 if not title or title in {"Study Material", "School Notice"}:
                     raise ValueError("AI returned unusable title")
+
+                if category == "Tests":
+                    verified_category = _verify_tests_category_with_ai(
+                        source_text,
+                        categories,
+                        headers,
+                    )
+                    if not verified_category:
+                        raise ValueError("Tests category could not be independently verified")
+                    category = verified_category
 
                 model_used = _clean(body.get("model")) or OPENROUTER_FREE_MODEL
                 print(f"AI announcement metadata: {category} / {subject} / {priority} via {model_used}")
