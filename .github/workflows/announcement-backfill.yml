@@ -1,0 +1,52 @@
+name: One-time Historical Announcement Backfill
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+    paths:
+      - "announcement_processor.py"
+      - "announcement_backfill.py"
+      - "test_announcements.py"
+      - ".github/workflows/announcement-backfill.yml"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: edusecure-announcement-backfill
+  cancel-in-progress: false
+
+jobs:
+  backfill:
+    runs-on: ubuntu-latest
+    timeout-minutes: 330
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v5
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install dependencies
+        run: python -m pip install -r requirements.txt
+
+      - name: Validate announcement code
+        run: |
+          python -m py_compile announcement_processor.py announcement_backfill.py openrouter_title.py title_cleaner.py runner.py sync_repair.py
+          python -m unittest -v test_announcements.py
+
+      - name: Backfill historical EduSecure messages
+        env:
+          PYTHONUNBUFFERED: "1"
+          EDUSECURE_USERNAME: ${{ secrets.EDUSECURE_USERNAME }}
+          EDUSECURE_PASSWORD: ${{ secrets.EDUSECURE_PASSWORD }}
+          FIREBASE_ADMIN_PASSWORD: ${{ secrets.FIREBASE_ADMIN_PASSWORD }}
+          OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+          ANNOUNCEMENT_BACKFILL_MAX_MESSAGES: "2000"
+        run: python announcement_backfill.py
