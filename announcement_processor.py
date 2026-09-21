@@ -13,7 +13,7 @@ import title_cleaner as intelligence
 FIREBASE_PROJECT_ID = intelligence.FIREBASE_PROJECT_ID
 FIREBASE_API_KEY = intelligence.FIREBASE_API_KEY
 ANNOUNCEMENTS_COLLECTION = "announcements"
-BACKFILL_STATE_DOCUMENT = "__announcement_backfill_v1__"
+BACKFILL_STATE_DOCUMENT = "__announcement_backfill_v2_ai__"
 
 ALLOWED_CATEGORIES = (
     "Tests",
@@ -216,43 +216,6 @@ def mark_backfill_completed(id_token: str, scanned: int, created: int) -> bool:
         timeout=30,
     )
     return update.ok
-
-def classify_category(text: Any) -> str:
-    raw = clean(text).lower()
-
-    rules = (
-        ("Tests", r"\b(?:class\s+test|unit\s+test|test|quiz)\b"),
-        ("Exams", r"\b(?:exam|examination|mid[- ]?term|term[- ]?exam|assessment)\b"),
-        ("Homework", r"\b(?:home\s*work|homework|complete\s+(?:the\s+)?worksheet|do\s+exercise)\b"),
-        ("Assignments", r"\b(?:assignment|submission|submit\s+by)\b"),
-        ("Projects", r"\b(?:project|project\s+work|model\s+making)\b"),
-        ("Holidays", r"\b(?:holiday|school\s+closed|school\s+closure|closed\s+tomorrow)\b"),
-        ("Timetable", r"\b(?:time\s*table|timetable|schedule\s+change|period\s+change)\b"),
-        ("Results", r"\b(?:result|marks|report\s+card)\b"),
-        ("Competitions", r"\b(?:competition|inter[- ]?school|olympiad|contest)\b"),
-        ("Events", r"\b(?:event|annual\s+function|exhibition|celebration|ptm|parent[- ]teacher)\b"),
-        ("Activities", r"\b(?:activity|practice|bring\s+(?:a|an|the)?\s*|uniform|drawing\s+sheet|craft)\b"),
-        ("Important", r"\b(?:important|urgent|deadline|last\s+date|mandatory|must\s+bring)\b"),
-    )
-
-    for category, pattern in rules:
-        if re.search(pattern, raw, flags=re.I):
-            return category
-    return "General"
-
-
-def classify_priority(text: Any) -> str:
-    raw = clean(text)
-    if re.search(r"\b(?:emergency|urgent|school\s+closed\s+tomorrow)\b", raw, flags=re.I):
-        return "urgent"
-    if re.search(
-        r"\b(?:important|exam|examination|deadline|last\s+date|mandatory|result|timetable)\b",
-        raw,
-        flags=re.I,
-    ):
-        return "important"
-    return "normal"
-
 
 def useful_announcement(text: Any) -> bool:
     raw = clean(text)
