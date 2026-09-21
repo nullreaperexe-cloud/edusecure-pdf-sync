@@ -79,13 +79,6 @@ jobs:
               echo "Check #${ITERATION} exited with code ${EXIT_CODE}. Keeping 24/7 worker alive for the next check."
             fi
 
-            echo "Running strict EduSecure title cleanup..."
-            python title_cleaner.py
-            CLEANUP_EXIT=$?
-            if [ "$CLEANUP_EXIT" -ne 0 ]; then
-              echo "Title cleanup exited with code ${CLEANUP_EXIT}; worker will continue."
-            fi
-
             NOW=$(date +%s)
             ELAPSED=$((NOW - CYCLE_START))
             SLEEP_FOR=$((300 - ELAPSED))
