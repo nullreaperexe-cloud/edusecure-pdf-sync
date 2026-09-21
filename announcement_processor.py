@@ -280,9 +280,12 @@ def build_announcement(
     if not useful_announcement(primary):
         return None
 
+    # Dashboard card text is the trusted primary message. Detail pages can contain
+    # UI labels such as 'Class Test' / 'More', so only use detail text when the
+    # dashboard message is too short to classify reliably.
     evidence = [primary]
     detail = clean(detail_text)
-    if detail and detail != primary:
+    if len(primary) < 40 and detail and detail != primary:
         evidence.append(detail)
 
     # OpenRouter AI is the ONLY authority for announcement title + section.
