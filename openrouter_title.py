@@ -30,10 +30,9 @@ def _iter_evidence(evidence: Any) -> Iterable[str]:
 
 def _final_title_cleanup(value: Any, subject: Any = "") -> str:
     """Hard post-filter: AI output can never bypass title safety rules."""
-    text = intelligence.sanitize_title(value, subject)
+    text = _clean(value)
 
-    # Remove ordinary dates in addition to the session/year cleanup already
-    # provided by title_cleaner.sanitize_title().
+    # Remove dates BEFORE the normal sanitizer changes punctuation/separators.
     months = (
         r"Jan(?:uary)?|Feb(?:ruary)?|Mar(?:ch)?|Apr(?:il)?|May|Jun(?:e)?|"
         r"Jul(?:y)?|Aug(?:ust)?|Sep(?:t(?:ember)?)?|Oct(?:ober)?|"
@@ -60,11 +59,10 @@ def _final_title_cleanup(value: Any, subject: Any = "") -> str:
         flags=re.I,
     )
 
+    # Now apply the mature deterministic cleaner as the final safety gate.
     text = intelligence.sanitize_title(text, subject)
     text = re.sub(r"\s+", " ", text).strip(" -:|,.;")
     return text or "Study Material"
-
-
 
 def generate_title(evidence: Any, subject: Any = "", fallback_title: Any = "") -> str:
     """Return a short AI title using only OpenRouter's free router.
