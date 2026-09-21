@@ -378,6 +378,7 @@ def main() -> int:
         "announcements_created": [],
         "announcement_duplicates_skipped": 0,
         "announcement_messages_ignored": 0,
+        "announcement_ai_retries": 0,
         "uploaded": [],
         "failures": [],
     }
@@ -493,6 +494,9 @@ def main() -> int:
                     report["announcement_duplicates_skipped"] += 1
                 elif status == "ignored":
                     report["announcement_messages_ignored"] += 1
+                elif status == "retry":
+                    report["announcement_ai_retries"] += 1
+                    print("Announcement postponed for next cycle because AI metadata was unavailable.")
                 else:
                     report["failures"].append(
                         f"Announcement upload failed for message dated {msg_date.isoformat()}"
@@ -588,6 +592,7 @@ def main() -> int:
         print(f"New announcements uploaded: {len(report['announcements_created'])}")
         print(f"Announcement duplicates skipped: {report['announcement_duplicates_skipped']}")
         print(f"Announcement messages ignored: {report['announcement_messages_ignored']}")
+        print(f"Announcement AI retries postponed: {report['announcement_ai_retries']}")
         print(f"Failures: {len(report['failures'])}")
         return 1 if report["failures"] else 0
     finally:
