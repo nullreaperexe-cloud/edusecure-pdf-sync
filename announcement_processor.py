@@ -403,7 +403,11 @@ def _announcement_fields(
         "subject": {"stringValue": clean(item.get("subject")) or "General"},
         "messageDate": message_date_value,
         "eventDate": {"nullValue": None},
-        "createdAt": {"timestampValue": now},
+        "createdAt": (
+            {"timestampValue": message_ts}
+            if message_date
+            else {"timestampValue": now}
+        ),
         "priority": {"stringValue": clean(item.get("priority")) or "normal"},
         "published": {"booleanValue": True},
         "sourceMessageId": {"stringValue": clean(item.get("sourceMessageId"))},
