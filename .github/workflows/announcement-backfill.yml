@@ -2,6 +2,11 @@ name: One-time Historical Announcement Backfill
 
 on:
   workflow_dispatch:
+  push:
+    branches:
+      - main
+    paths:
+      - "RUN_ANNOUNCEMENT_REPAIR.txt"
 
 permissions:
   contents: read
