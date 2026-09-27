@@ -14,7 +14,7 @@ import title_cleaner as intelligence
 FIREBASE_PROJECT_ID = intelligence.FIREBASE_PROJECT_ID
 FIREBASE_API_KEY = intelligence.FIREBASE_API_KEY
 ANNOUNCEMENTS_COLLECTION = "announcements"
-BACKFILL_STATE_DOCUMENT = "automation_state_announcement_backfill_v4_batch_clean"
+BACKFILL_STATE_DOCUMENT = "automation_state_announcement_backfill_v5_all_messages"
 
 ALLOWED_CATEGORIES = (
     "Tests",
@@ -507,15 +507,60 @@ def prepare_announcement_ai_text(value: Any) -> str:
 
 
 
+
+def build_fallback_announcement(
+    message_text: str,
+    detail_text: str,
+    message_date: Optional[date],
+    attachment_url: str = "",
+) -> Dict[str, Any]:
+    """Never drop an EduSecure message when AI is temporarily unavailable."""
+    primary = clean(message_text) or clean(detail_text) or "School Update"
+    cleaned_primary = prepare_announcement_ai_text(primary) or primary
+
+    words = cleaned_primary.split()
+    short_seed = " ".join(words[:12]) if words else "School Update"
+    title = ai_title._final_title_cleanup(short_seed, "General")
+    if not title:
+        title = "School Update"
+
+    attachment = clean(attachment_url)
+    return {
+        "title": title,
+        "description": clean_description(primary) or title,
+        "category": "General",
+        "subject": "General",
+        "priority": "normal",
+        "aiModel": "",
+        "aiStatus": "pending",
+        "originalMessage": primary,
+        "sourceMessageId": stable_message_id(message_text, message_date),
+        "hasAttachment": bool(attachment),
+        "attachmentUrl": attachment,
+    }
+
+
+
 def build_announcement(
     message_text: str,
     detail_text: str,
     message_date: Optional[date],
-) -> Optional[Dict[str, Any]]:
-    primary = clean(message_text) or clean(detail_text)
-    if not useful_announcement(primary):
-        return None
+    attachment_url: str = "",
+) -> Dict[str, Any]:
+    """Every non-PDF EduSecure message becomes an announcement.
 
+    OpenRouter gets first chance to create title/category/subject/priority.
+    If AI is unavailable, publish a safe pending fallback instead of dropping
+    the school message; the historical AI repair can refine it later.
+    """
+    fallback = build_fallback_announcement(
+        message_text,
+        detail_text,
+        message_date,
+        attachment_url=attachment_url,
+    )
+
+    primary = clean(message_text) or clean(detail_text) or "School Update"
     cleaned_primary = prepare_announcement_ai_text(primary)
     cleaned_detail = prepare_announcement_ai_text(detail_text)
 
@@ -527,30 +572,26 @@ def build_announcement(
     ):
         evidence.append(cleaned_detail)
 
-    # OpenRouter AI is the ONLY authority for announcement title + section.
-    # If AI is unavailable/invalid, postpone instead of guessing a category.
     ai_meta = ai_title.generate_announcement_metadata(
         evidence,
         ALLOWED_CATEGORIES,
     )
     if not ai_meta:
-        print("Announcement AI metadata unavailable -> postpone this message")
-        return {"_retry": True}
+        print("Announcement AI unavailable -> publishing safe pending fallback")
+        return fallback
 
-    description = clean_description(primary)
-    if not description:
-        description = ai_meta["title"]
+    fallback.update(
+        {
+            "title": ai_meta["title"],
+            "category": ai_meta["category"],
+            "subject": ai_meta["subject"],
+            "priority": ai_meta["priority"],
+            "aiModel": ai_meta.get("aiModel", ""),
+            "aiStatus": "complete",
+        }
+    )
+    return fallback
 
-    return {
-        "title": ai_meta["title"],
-        "description": description,
-        "category": ai_meta["category"],
-        "subject": ai_meta["subject"],
-        "priority": ai_meta["priority"],
-        "aiModel": ai_meta.get("aiModel", ""),
-        "originalMessage": primary,
-        "sourceMessageId": stable_message_id(message_text, message_date),
-    }
 def _announcement_fields(
     item: Dict[str, Any],
     message_date: Optional[date],
@@ -583,9 +624,10 @@ def _announcement_fields(
         "priority": {"stringValue": clean(item.get("priority")) or "normal"},
         "published": {"booleanValue": True},
         "sourceMessageId": {"stringValue": clean(item.get("sourceMessageId"))},
-        "hasAttachment": {"booleanValue": False},
-        "attachmentUrl": {"stringValue": ""},
+        "hasAttachment": {"booleanValue": bool(item.get("hasAttachment"))},
+        "attachmentUrl": {"stringValue": clean(item.get("attachmentUrl"))},
         "aiModel": {"stringValue": clean(item.get("aiModel"))},
+        "aiStatus": {"stringValue": clean(item.get("aiStatus")) or "complete"},
         "originalMessage": {"stringValue": clean(item.get("originalMessage"))},
     }
 
@@ -809,10 +851,6 @@ def refresh_existing_announcement(
 ) -> Tuple[str, Optional[Dict[str, Any]]]:
     """Regenerate one historical announcement in place; never duplicate it."""
     item = build_announcement(message_text, detail_text, message_date)
-    if not item:
-        return "ignored", None
-    if item.get("_retry"):
-        return "retry", None
     if upload_announcement(
         item,
         message_date,
@@ -829,8 +867,9 @@ def process_no_attachment_message(
     message_date: Optional[date],
     id_token: str,
     existing_source_ids: Set[str],
+    attachment_url: str = "",
 ) -> Tuple[str, Optional[Dict[str, Any]]]:
-    """Process one live no-attachment message without listing the collection."""
+    """Process every non-PDF EduSecure message without collection listing."""
     source_id = stable_message_id(message_text, message_date)
 
     if source_id in existing_source_ids:
@@ -845,16 +884,14 @@ def process_no_attachment_message(
     if claim_status != "claimed":
         return "failed", None
 
-    item = build_announcement(message_text, detail_text, message_date)
-    if not item:
-        print("Message has no useful announcement content -> ignore")
-        delete_announcement_claim(source_id, id_token)
-        return "ignored", None
-    if item.get("_retry"):
-        delete_announcement_claim(source_id, id_token)
-        return "retry", None
-
+    item = build_announcement(
+        message_text,
+        detail_text,
+        message_date,
+        attachment_url=attachment_url,
+    )
     item["sourceMessageId"] = source_id
+
     if upload_announcement(
         item,
         message_date,
@@ -866,3 +903,4 @@ def process_no_attachment_message(
 
     delete_announcement_claim(source_id, id_token)
     return "failed", item
+
