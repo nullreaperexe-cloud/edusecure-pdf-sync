@@ -36,18 +36,43 @@ class AnnouncementProcessorTests(unittest.TestCase):
         mocked_ai.assert_called_once()
 
     @patch("announcement_processor.ai_title.generate_announcement_metadata")
-    def test_ai_failure_postpones_instead_of_guessing_category(self, mocked_ai):
+    def test_ai_failure_still_publishes_safe_pending_announcement(self, mocked_ai):
         mocked_ai.return_value = None
         item = announcements.build_announcement(
             "Complete the worksheet as homework.",
             "Complete the worksheet as homework.",
             date(2026, 9, 21),
         )
-        self.assertEqual(item, {"_retry": True})
+        self.assertEqual(item["aiStatus"], "pending")
+        self.assertEqual(item["category"], "General")
+        self.assertTrue(item["title"])
 
-    def test_greeting_only_is_ignored_before_ai_call(self):
-        self.assertFalse(
-            announcements.useful_announcement("Dear Students Good Morning Thanks")
+    @patch("announcement_processor.ai_title.generate_announcement_metadata")
+    def test_even_greeting_only_message_becomes_announcement(self, mocked_ai):
+        mocked_ai.return_value = None
+        item = announcements.build_announcement(
+            "Dear Students Good Morning Thanks",
+            "Dear Students Good Morning Thanks",
+            date(2026, 9, 21),
+        )
+        self.assertIsNotNone(item)
+        self.assertEqual(item["aiStatus"], "pending")
+
+
+    @patch("announcement_processor.ai_title.generate_announcement_metadata")
+    def test_non_pdf_attachment_is_preserved(self, mocked_ai):
+        mocked_ai.return_value = None
+        item = announcements.build_announcement(
+            "See the attached activity image.",
+            "See the attached activity image.",
+            date(2026, 9, 21),
+            attachment_url="https://example.com/activity.jpg",
+        )
+        fields = announcements._announcement_fields(item, date(2026, 9, 21))
+        self.assertTrue(fields["hasAttachment"]["booleanValue"])
+        self.assertEqual(
+            fields["attachmentUrl"]["stringValue"],
+            "https://example.com/activity.jpg",
         )
 
 
