@@ -1,4 +1,5 @@
 name: Firebase Announcement Permission Check
+# diagnostic v2: distinguish admin-rule vs announcements-rule
 
 on:
   workflow_dispatch:
