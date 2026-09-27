@@ -260,6 +260,16 @@ def valid_attachment_url(url: Optional[str], before_url: str = "") -> bool:
     return True
 
 
+
+def is_pdf_attachment_url(url: Optional[str]) -> bool:
+    """Only real PDF URLs belong in the PDF library."""
+    if not url:
+        return False
+    value = clean(url)
+    return bool(re.search(r"\.pdf(?:$|[?#])", value, flags=re.I))
+
+
+
 def extract_attachment_url(driver, app_handle: str) -> Optional[str]:
     direct = legacy.extract_pdf_from_current_page(driver)
     if valid_attachment_url(direct):
@@ -424,19 +434,21 @@ def main() -> int:
                 processed.add(fp)
 
             msg_date = legacy.extract_message_date(message_text)
-            if msg_date is None:
-                print("Undated message -> skip")
-                continue
 
             # PDF and Announcement freshness are intentionally separate.
-            # PDF keeps the website-first strict cutoff. Announcements keep
-            # same-day messages eligible and rely on stable sourceMessageId dedupe.
-            pdf_date_eligible = not (
-                msg_date < cutoff if latest_date else msg_date <= cutoff
-            )
-            announcement_date_eligible = msg_date >= announcement_cutoff
+            # Undated messages can still become Announcements; undated PDFs are
+            # not uploaded because the PDF library requires a source date.
+            if msg_date is None:
+                pdf_date_eligible = False
+                announcement_date_eligible = True
+                print("Undated EduSecure message -> announcement-eligible")
+            else:
+                pdf_date_eligible = not (
+                    msg_date < cutoff if latest_date else msg_date <= cutoff
+                )
+                announcement_date_eligible = msg_date >= announcement_cutoff
 
-            if not pdf_date_eligible and not announcement_date_eligible:
+            if msg_date is not None and not pdf_date_eligible and not announcement_date_eligible:
                 old_confirmations += 1
                 print(
                     f"Reached message older than both cutoffs: {msg_date.isoformat()} "
@@ -449,7 +461,10 @@ def main() -> int:
             old_confirmations = 0
             report["newer_messages_seen"] += 1
             saved_position = legacy.get_dashboard_scroll_position(driver)
-            print(f"Opening new message dated {msg_date.isoformat()}: {message_text[:220]}")
+            print(
+                f"Opening EduSecure message dated "
+                f"{msg_date.isoformat() if msg_date else 'UNKNOWN'}: {message_text[:220]}"
+            )
 
             if not legacy.real_click_message_v29(driver, message):
                 report["failures"].append(f"Could not open message: {message_text[:120]}")
@@ -458,30 +473,36 @@ def main() -> int:
 
             report["messages_opened"] += 1
             detail_text = legacy.app_current_text(driver)
-            pdf_url = extract_attachment_url(driver, app_handle)
+            attachment_url = extract_attachment_url(driver, app_handle)
+            pdf_url = attachment_url if is_pdf_attachment_url(attachment_url) else None
 
             driver.switch_to.window(app_handle)
             legacy.restore_app_after_pdf(driver, app_handle)
 
             if not pdf_url:
                 if not announcement_date_eligible:
-                    print("No PDF attachment, but message is older than announcement live-scan cutoff -> skip")
+                    print("Non-PDF message is outside live recovery window -> historical backfill owns it")
                     legacy.return_dashboard_and_restore_v25(driver, app_handle, saved_position)
                     continue
 
-                print("No PDF attachment -> routing message to Announcements")
+                if attachment_url:
+                    print("Non-PDF attachment found -> routing message to Announcements with attachment")
+                else:
+                    print("No PDF attachment -> routing message to Announcements")
+
                 status, announcement_item = announcements.process_no_attachment_message(
                     message_text=message_text,
                     detail_text=detail_text,
                     message_date=msg_date,
                     id_token=id_token,
                     existing_source_ids=existing_announcement_ids,
+                    attachment_url=clean(attachment_url),
                 )
                 if status == "created" and announcement_item:
                     report["announcements_created"].append({
                         "title": announcement_item.get("title", ""),
                         "category": announcement_item.get("category", ""),
-                        "source_date": msg_date.isoformat(),
+                        "source_date": msg_date.isoformat() if msg_date else "",
                     })
                 elif status == "duplicate":
                     report["announcement_duplicates_skipped"] += 1
@@ -492,12 +513,17 @@ def main() -> int:
                     print("Announcement postponed for next cycle because AI metadata was unavailable.")
                 else:
                     report["failures"].append(
-                        f"Announcement upload failed for message dated {msg_date.isoformat()}"
+                        f"Announcement upload failed for message dated {msg_date.isoformat() if msg_date else 'UNKNOWN'}"
                     )
                 legacy.return_dashboard_and_restore_v25(driver, app_handle, saved_position)
                 continue
 
             report["attachments_found"] += 1
+
+            if msg_date is None:
+                report["failures"].append("Undated PDF message cannot be safely uploaded")
+                legacy.return_dashboard_and_restore_v25(driver, app_handle, saved_position)
+                continue
 
             if not pdf_date_eligible:
                 print(
