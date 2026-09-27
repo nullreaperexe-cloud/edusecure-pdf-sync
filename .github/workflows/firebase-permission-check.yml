@@ -28,6 +28,6 @@ jobs:
 
       - name: Check Firebase announcement writes
         env:
-          FIREBASE_ADMIN_EMAIL: ${{ secrets.FIREBASE_ADMIN_EMAIL }}
+          FIREBASE_ADMIN_EMAIL: ${{ secrets.FIREBASE_ADMIN_EMAIL || vars.FIREBASE_ADMIN_EMAIL }}
           FIREBASE_ADMIN_PASSWORD: ${{ secrets.FIREBASE_ADMIN_PASSWORD }}
         run: python firebase_permission_check.py
