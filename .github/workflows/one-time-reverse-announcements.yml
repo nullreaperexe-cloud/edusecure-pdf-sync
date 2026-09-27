@@ -2,10 +2,6 @@ name: One-time Reverse Existing Announcements
 
 on:
   workflow_dispatch:
-  schedule:
-    # Retry after Firestore free daily quota reset. The script has a completion
-    # marker, so the reversal mutation can succeed only once.
-    - cron: "15 7 * * *"
 
 permissions:
   contents: read
@@ -40,5 +36,6 @@ jobs:
       - name: Reverse existing announcements once
         env:
           PYTHONUNBUFFERED: "1"
+          FIREBASE_ADMIN_EMAIL: ${{ secrets.FIREBASE_ADMIN_EMAIL }}
           FIREBASE_ADMIN_PASSWORD: ${{ secrets.FIREBASE_ADMIN_PASSWORD }}
         run: python one_time_reverse_announcements.py
