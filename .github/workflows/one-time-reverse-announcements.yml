@@ -36,6 +36,6 @@ jobs:
       - name: Reverse existing announcements once
         env:
           PYTHONUNBUFFERED: "1"
-          FIREBASE_ADMIN_EMAIL: ${{ secrets.FIREBASE_ADMIN_EMAIL }}
+          FIREBASE_ADMIN_EMAIL: ${{ secrets.FIREBASE_ADMIN_EMAIL || vars.FIREBASE_ADMIN_EMAIL }}
           FIREBASE_ADMIN_PASSWORD: ${{ secrets.FIREBASE_ADMIN_PASSWORD }}
         run: python one_time_reverse_announcements.py
