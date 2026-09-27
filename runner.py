@@ -355,9 +355,9 @@ def main() -> int:
     print(f"Existing semantic EduSecure duplicate keys loaded: {len(existing_semantic_keys)}")
 
     existing_announcement_ids: Set[str] = set()
-    announcement_cutoff = TODAY - timedelta(days=1)
+    announcement_cutoff = TODAY - timedelta(days=int(os.environ.get("ANNOUNCEMENT_RECOVERY_DAYS", "7")))
     print(
-        "Announcement live scan uses deterministic Firestore document IDs; "
+        "Announcement recovery scan uses deterministic Firestore document IDs; "
         f"messages from {announcement_cutoff.isoformat()} onward remain eligible."
     )
 
