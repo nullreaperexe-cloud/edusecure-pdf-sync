@@ -44,7 +44,7 @@ def main() -> int:
     print("No announcements collection listing.")
     print("Dates/order are repaired directly from EduSecure message dates.")
     print(f"AI batch size: {AI_BATCH_SIZE}")
-    print("Messages WITH attachments remain PDF-only.")
+    print("ONLY real .pdf attachments stay PDF-only; every other EduSecure message becomes an Announcement.")
 
     driver = runner.legacy.make_driver()
     processed: Set[str] = set()
@@ -125,22 +125,11 @@ def main() -> int:
             driver.switch_to.window(app_handle)
             runner.legacy.restore_app_after_pdf(driver, app_handle)
 
-            if attachment_url:
+            # Exact routing rule:
+            #   real PDF attachment -> PDF library only
+            #   no attachment / JPG / image / other non-PDF -> Announcements
+            if attachment_url and runner.is_pdf_attachment_url(attachment_url):
                 attachment_messages += 1
-                runner.legacy.return_dashboard_and_restore_v25(
-                    driver,
-                    app_handle,
-                    saved_position,
-                )
-                continue
-
-            if not announcements.useful_announcement(message_text):
-                ignored += 1
-                stale_id = announcements.stable_message_id(message_text, msg_date)
-                try:
-                    announcements.delete_announcement_claim(stale_id, id_token)
-                except Exception:
-                    pass
                 runner.legacy.return_dashboard_and_restore_v25(
                     driver,
                     app_handle,
@@ -151,18 +140,36 @@ def main() -> int:
             source_id = announcements.stable_message_id(message_text, msg_date)
             valid_source_ids.add(source_id)
 
+            provisional = announcements.build_fallback_announcement(
+                message_text,
+                detail_text,
+                msg_date,
+                attachment_url=runner.clean(attachment_url),
+            )
+            provisional["sourceMessageId"] = source_id
+
+            # POST by stable document ID: creates a missed announcement, but a
+            # 409 leaves an already-good existing announcement untouched.
+            if not announcements.upload_announcement(
+                provisional,
+                msg_date,
+                id_token,
+            ):
+                failures += 1
+
             ai_text = _ai_text(message_text, detail_text)
-            if not ai_text:
-                ignored += 1
-            else:
+            if ai_text:
                 pending.append(
                     {
                         "id": source_id,
                         "text": ai_text,
                         "message_text": message_text,
                         "message_date": msg_date,
+                        "attachment_url": runner.clean(attachment_url),
                     }
                 )
+            else:
+                ignored += 1
 
             runner.legacy.return_dashboard_and_restore_v25(
                 driver,
@@ -223,8 +230,11 @@ def main() -> int:
                     "subject": meta["subject"],
                     "priority": meta["priority"],
                     "aiModel": meta.get("aiModel", ""),
+                    "aiStatus": "complete",
                     "originalMessage": item["message_text"],
                     "sourceMessageId": item["id"],
+                    "hasAttachment": bool(item.get("attachment_url")),
+                    "attachmentUrl": item.get("attachment_url", ""),
                 }
 
                 ok = announcements.upload_announcement(
@@ -248,20 +258,26 @@ def main() -> int:
         print("\n=== ANNOUNCEMENT BATCH REPAIR SUMMARY ===")
         print(f"Messages scanned: {scanned}")
         print(f"Messages opened: {opened}")
-        print(f"Attachment/PDF messages skipped: {attachment_messages}")
+        print(f"Real PDF messages kept out of Announcements: {attachment_messages}")
         print("Existing announcement sort order preserved during AI repair.")
         print(f"Announcements queued for AI: {len(pending)}")
         print(f"Announcements AI-repaired: {repaired}")
         print(f"AI retries pending: {ai_retries}")
-        print(f"Useless messages ignored: {ignored}")
+        print(f"Messages without usable AI text (still uploaded): {ignored}")
         print(f"Failures: {failures}")
         print(f"Reached EduSecure history bottom: {reached_bottom}")
 
-        if reached_bottom and failures == 0 and ai_retries == 0:
-            if not announcements.mark_backfill_completed(id_token, scanned, repaired):
-                print("Repair succeeded but completion state could not be saved.")
-                return 1
-            print("Historical announcement batch AI repair complete ✅")
+        if reached_bottom and failures == 0:
+            if ai_retries == 0:
+                if not announcements.mark_backfill_completed(id_token, scanned, repaired):
+                    print("Backfill succeeded but completion state could not be saved.")
+                    return 1
+                print("Historical announcement backfill + AI refinement complete ✅")
+            else:
+                print(
+                    "All historical non-PDF messages were backfilled; "
+                    "some AI refinements remain pending for a later rerun."
+                )
             return 0
 
         return 1
