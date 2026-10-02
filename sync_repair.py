@@ -976,7 +976,13 @@ def read_latest_date_from_website() -> Optional[date]:
             )
             return latest
 
-        print("ERROR: Could not read the latest PDF date from the 8aPDF website.")
+        print("Website date could not be read; Firestore recovery will be used.")
+        return None
+    except Exception as exc:
+        print(
+            "Website preview unavailable; relying on authenticated Firestore "
+            f"and bounded URL-checked recovery: {type(exc).__name__}"
+        )
         return None
     finally:
         try:
