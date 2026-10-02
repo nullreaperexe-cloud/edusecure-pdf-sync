@@ -1,0 +1,1 @@
+Trigger initial verified PDF integrity audit (2026-10-02).
