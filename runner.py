@@ -16,6 +16,7 @@ import sync as legacy
 import title_cleaner as intelligence
 import openrouter_title as ai_title
 import announcement_processor as announcements
+import pdf_integrity as pdfguard
 
 START_URL = legacy.START_URL
 FIREBASE_PROJECT_ID = "academyvault-5d1eb"
@@ -356,7 +357,9 @@ def main() -> int:
             existing_semantic_keys.add(key)
 
     safe_cutoff = TODAY - timedelta(days=1)
-    cutoff = latest_date or safe_cutoff
+    # Revisit recent PDFs even when a newer card exists: exact URLs prevent duplicates.
+    recovery_floor = TODAY - timedelta(days=int(os.environ.get('PDF_RECOVERY_DAYS', '21')))
+    cutoff = min(latest_date or safe_cutoff, recovery_floor)
     if latest_date:
         print(f"Latest existing PDF source date: {latest_date.isoformat()}")
     else:
@@ -480,6 +483,12 @@ def main() -> int:
             legacy.restore_app_after_pdf(driver, app_handle)
 
             if not pdf_url:
+                # An explicitly promised PDF with a broken link is a failed PDF,
+                # never an invented text-only announcement.
+                if not attachment_url and re.search(r'(?:PDF\s+attached|attached\s+PDF|attached\s+PDF\s+file)', message_text, re.I):
+                    report['failures'].append('Explicit PDF attachment could not be extracted: ' + message_text[:130])
+                    legacy.return_dashboard_and_restore_v25(driver, app_handle, saved_position)
+                    continue
                 if not announcement_date_eligible:
                     print("Non-PDF message is outside live recovery window -> historical backfill owns it")
                     legacy.return_dashboard_and_restore_v25(driver, app_handle, saved_position)
@@ -540,14 +549,23 @@ def main() -> int:
                 legacy.return_dashboard_and_restore_v25(driver, app_handle, saved_position)
                 continue
 
-            original_evidence = [message_text, detail_text]
+            # Use the selected dashboard message, not potentially stale full-page
+            # detail DOM text from another EduSecure card.
+            original_evidence = [message_text]
             extracted_title = legacy.make_title(
-                detail_text or message_text,
+                message_text,
                 pdf_url,
                 len(report["uploaded"]) + 1,
             )
+            pdf_text, pdf_state = pdfguard.fetch_pdf_text(pdf_url)
+            if pdf_state == "not-a-pdf":
+                report["failures"].append("Attachment URL did not return a PDF: " + pdf_url)
+                legacy.return_dashboard_and_restore_v25(driver, app_handle, saved_position)
+                continue
+            if pdf_text:
+                original_evidence.append(pdf_text[:2500])
             initially_detected = normalize_subject_name(
-                legacy.detect_subject(detail_text or message_text)
+                legacy.detect_subject(message_text)
             )
             base_item = intelligence.finalize_material_fields(
                 {
@@ -567,10 +585,14 @@ def main() -> int:
                 subject=base_item["subject"],
                 fallback_title=base_item["title"],
             )
+            final_title, verification = pdfguard.select_verified_title(
+                message_text, generated_title, base_item["title"], pdf_text,
+            )
+            print(f"PDF title integrity: {verification}; extraction={pdf_state}; title={final_title}")
             item = {
                 **base_item,
-                "title": generated_title,
-                "description": generated_title,
+                "title": final_title,
+                "description": final_title,
             }
 
             semantic_key = intelligence.semantic_duplicate_key(
