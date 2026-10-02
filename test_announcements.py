@@ -155,5 +155,55 @@ class AnnouncementProcessorTests(unittest.TestCase):
         self.assertEqual(result["category"], "Tests")
 
 
+
+    @patch("announcement_processor.claim_announcement", return_value="existing")
+    @patch("announcement_processor.firestore_request")
+    @patch("announcement_processor.build_announcement")
+    @patch("announcement_processor.upload_announcement", return_value=True)
+    def test_unpublished_claim_is_recovered(
+        self, mocked_upload, mocked_build, mocked_request, _claim,
+    ):
+        response = unittest.mock.Mock()
+        response.ok = True
+        response.json.return_value = {
+            "fields": {
+                "published": {"booleanValue": False},
+                "title": {"stringValue": "Processing Announcement"},
+            }
+        }
+        mocked_request.return_value = response
+        mocked_build.return_value = {"title": "Exam Notice", "sourceMessageId": "ignored"}
+        status, item = announcements.process_no_attachment_message(
+            "Science exam tomorrow", "Science exam tomorrow",
+            date(2026, 10, 2), "token", set(),
+        )
+        self.assertEqual(status, "created")
+        self.assertEqual(item["title"], "Exam Notice")
+        self.assertTrue(mocked_upload.called)
+
+    @patch("announcement_processor.claim_announcement", return_value="existing")
+    @patch("announcement_processor.firestore_request")
+    @patch("announcement_processor.build_announcement")
+    def test_published_complete_announcement_is_not_regenerated(
+        self, mocked_build, mocked_request, _claim,
+    ):
+        response = unittest.mock.Mock()
+        response.ok = True
+        response.json.return_value = {
+            "fields": {
+                "published": {"booleanValue": True},
+                "title": {"stringValue": "Correct Announcement"},
+            }
+        }
+        mocked_request.return_value = response
+        status, item = announcements.process_no_attachment_message(
+            "School notice", "School notice",
+            date(2026, 10, 2), "token", set(),
+        )
+        self.assertEqual(status, "duplicate")
+        self.assertIsNone(item)
+        mocked_build.assert_not_called()
+
+
 if __name__ == "__main__":
     unittest.main()
