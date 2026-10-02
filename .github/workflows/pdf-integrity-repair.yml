@@ -1,0 +1,34 @@
+name: Audit and Repair Existing PDF Titles
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - "RUN_PDF_REPAIR.txt"
+      - ".github/workflows/pdf-integrity-repair.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  integrity:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+          cache: pip
+      - run: python -m pip install -r requirements.txt
+      - name: Validate code and unit tests
+        run: |
+          python -m py_compile pdf_integrity.py pdf_integrity_repair.py
+          python -m unittest -v test_pdf_integrity.py
+      - name: Repair only verified PDF mismatches
+        env:
+          PYTHONUNBUFFERED: "1"
+          FIREBASE_ADMIN_EMAIL: ${{ secrets.FIREBASE_ADMIN_EMAIL || vars.FIREBASE_ADMIN_EMAIL }}
+          FIREBASE_ADMIN_PASSWORD: ${{ secrets.FIREBASE_ADMIN_PASSWORD }}
+        run: python pdf_integrity_repair.py
