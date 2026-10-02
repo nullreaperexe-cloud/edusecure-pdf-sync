@@ -22,11 +22,12 @@ from selenium import webdriver
 from selenium.common.exceptions import WebDriverException
 from selenium.webdriver.common.action_chains import ActionChains
 from selenium.webdriver.common.keys import Keys
+from selenium.webdriver.common.by import By
 
 import runner
 
 
-WEBSITE_URL = "https://8apdf.xo.je/"
+WEBSITE_URL = "https://8apdf.vercel.app/"
 DOWNLOAD_DIR = "/tmp/edusecure-downloads"
 BAD_URL_RE = re.compile(
     r"(?:/ParentApp/morelinks\.aspx(?:\?|$)|/images/loader\.gif(?:\?|$)|dashboard\.aspx(?:\?|$)|/login(?:\?|/|$))",
@@ -899,7 +900,7 @@ def extract_attachment_url(driver, app_handle: str) -> Optional[str]:
 
 
 # ---------------------------------------------------------------------------
-# Website-first strict date boundary repair
+# Current Vercel website date reference and bounded recovery
 # ---------------------------------------------------------------------------
 
 class _WebsiteBoundaryDate(date):
@@ -935,53 +936,172 @@ def parse_website_added_dates(text: str) -> List[date]:
     return found
 
 
-def read_latest_date_from_website() -> Optional[date]:
-    """First action: open 8aPDF and read the latest displayed material date."""
-    driver = runner.legacy.make_driver()
-    try:
-        print("=== STEP 0: CHECKING 8aPDF WEBSITE LATEST PDF DATE ===")
-        print(f"Opening website first: {WEBSITE_URL}")
-        driver.get(WEBSITE_URL)
-        runner.legacy.wait_ready(driver)
-        time.sleep(1.8)
+def complete_vercel_onboarding(driver) -> bool:
+    """Submit a temporary name on 8aPDF before reading PDF cards.
 
-        body_text = ""
+    Works with both the 'Write your name' and 'Enter your name' forms.
+    The newer two-step variant also shows an optional notification prompt,
+    which the automation dismisses without requesting browser permissions.
+    Never touches the library's search field.
+    """
+    from uuid import uuid4
+
+    name_field = None
+    deadline = time.time() + 12
+    while time.time() < deadline:
         try:
-            body_text = driver.execute_script(
-                "return (document.body && document.body.innerText) || '';"
-            ) or ""
+            # Both supported layouts use this *onboarding-only* form.
+            fields = driver.find_elements(By.CSS_SELECTOR, "#nameForm #nameInput")
+            name_field = next(
+                (field for field in fields if field.is_displayed() and field.is_enabled()),
+                None,
+            )
+            if name_field:
+                break
+            modals = driver.find_elements(By.CSS_SELECTOR, "#nameModal")
+            if modals and any(modal.is_displayed() for modal in modals):
+                time.sleep(0.3)
+                continue
+            # Name already saved in this browser session, or welcome dismissed.
+            if driver.find_elements(By.CSS_SELECTOR, "#pdfGrid, #materialsSection"):
+                print("Vercel 8aPDF welcome is already completed.")
+                break
         except Exception:
             pass
+        time.sleep(0.3)
 
-        dates = parse_website_added_dates(body_text)
+    if name_field is not None:
+        temporary_name = "Reader" + uuid4().hex[:6]
+        try:
+            name_field.click()
+            name_field.send_keys(Keys.CONTROL, "a")
+            name_field.send_keys(temporary_name)
+            if (name_field.get_attribute("value") or "").strip() != temporary_name:
+                print("Vercel 8aPDF temporary name was not accepted.")
+                return False
+            # Scope to the onboarding form, never click a PDF-library control.
+            buttons = driver.find_elements(
+                By.CSS_SELECTOR, "#nameForm button[type='submit'], #nameForm input[type='submit']"
+            )
+            continue_button = next(
+                (button for button in buttons if button.is_displayed() and button.is_enabled()),
+                None,
+            )
+            if continue_button is None:
+                print("Vercel 8aPDF onboarding Continue button was not found.")
+                return False
+            continue_button.click()
+            print("Vercel 8aPDF onboarding submitted with temporary visitor name.")
+        except Exception as exc:
+            print(f"Vercel 8aPDF onboarding failed: {type(exc).__name__}")
+            return False
+
+    # Newer version has a second welcome step asking for notification access.
+    # Use the site's own 'Continue without notifications' handler; never
+    # request notification permissions in the GitHub automation's browser.
+    for _ in range(18):
+        try:
+            prompts = driver.find_elements(By.CSS_SELECTOR, "#permissionModal")
+            prompt = next((el for el in prompts if el.is_displayed()), None)
+            if prompt is not None:
+                skips = driver.find_elements(By.CSS_SELECTOR, "#notificationLater")
+                if not skips:
+                    print("Vercel 8aPDF notification bypass button missing.")
+                    return False
+                skip = skips[0]
+                driver.execute_script(
+                    "arguments[0].style.display=''; arguments[0].click();",
+                    skip,
+                )
+                print("Vercel 8aPDF notification step skipped without requesting permission.")
+                time.sleep(0.5)
+                if prompt.is_displayed():
+                    return False
+                break
+        except Exception:
+            pass
+        time.sleep(0.25)
+
+    try:
+        modals = driver.find_elements(By.CSS_SELECTOR, "#nameModal")
+        if any(modal.is_displayed() for modal in modals):
+            print("Vercel 8aPDF name overlay still visible; date check aborted.")
+            return False
+    except Exception:
+        return False
+    return True
+
+
+def read_latest_date_from_website() -> Optional[date]:
+    """Open the current Vercel website, finish onboarding and inspect PDF cards."""
+    driver = runner.legacy.make_driver()
+    try:
+        print("=== STEP 0: CHECKING VERCEL 8aPDF WEBSITE LATEST PDF DATE ===")
+        print(f"Opening current website: {WEBSITE_URL}")
+        driver.get(WEBSITE_URL)
+        runner.legacy.wait_ready(driver)
+
+        if not complete_vercel_onboarding(driver):
+            print("Vercel onboarding incomplete. Falling back to authenticated Firestore.")
+            return None
+
+        dates: List[date] = []
+        # Wait for the real client-rendered PDF cards; a welcome-screen date
+        # or a loading skeleton must never be mistaken for the latest PDF.
+        for attempt in range(30):
+            body_text = driver.execute_script(
+                """
+                const grid = document.querySelector('#pdfGrid, #materialsGrid, .materials-grid');
+                return (grid ? grid.innerText : (document.body?.innerText || '')) || '';
+                """
+            ) or ""
+            dates = parse_website_added_dates(body_text)
+            if dates:
+                break
+            time.sleep(0.5)
+
+        # The library initially shows a limited set of PDFs. Open additional
+        # batches when available before deciding which displayed date is newest.
+        for _ in range(12):
+            show_more = driver.find_elements(
+                By.CSS_SELECTOR, "#pdfMore, #pdfMoreBtn, #loadMoreBtn"
+            )
+            button = next(
+                (element for element in show_more if element.is_displayed() and element.is_enabled()),
+                None,
+            )
+            if button is None:
+                break
+            previous_count = len(dates)
+            button.click()
+            for _ in range(12):
+                time.sleep(0.4)
+                body_text = driver.execute_script(
+                    """
+                    const grid = document.querySelector('#pdfGrid, #materialsGrid, .materials-grid');
+                    return (grid ? grid.innerText : (document.body?.innerText || '')) || '';
+                    """
+                ) or ""
+                dates = parse_website_added_dates(body_text)
+                if len(dates) > previous_count:
+                    break
+            if len(dates) <= previous_count:
+                break
+
         if dates:
             latest = max(dates)
-            print(f"Latest PDF date found on website: {latest.isoformat()}")
             print(
-                "STRICT RULE LOCKED: only EduSecure attachments with a message date "
-                f"AFTER {latest.isoformat()} can be uploaded. Same-date and older are skipped."
+                f"Latest visible PDF date on {WEBSITE_URL}: {latest.isoformat()} "
+                f"(found {len(dates)} dated cards)."
             )
             return latest
 
-        try:
-            latest = runner.legacy.latest_library_date(driver)
-        except Exception:
-            latest = None
-
-        if latest:
-            print(f"Latest PDF date found by fallback reader: {latest.isoformat()}")
-            print(
-                "STRICT RULE LOCKED: only EduSecure attachments with a message date "
-                f"AFTER {latest.isoformat()} can be uploaded. Same-date and older are skipped."
-            )
-            return latest
-
-        print("Website date could not be read; Firestore recovery will be used.")
+        print("No readable PDF card dates on Vercel; using Firestore recovery.")
         return None
     except Exception as exc:
         print(
-            "Website preview unavailable; relying on authenticated Firestore "
-            f"and bounded URL-checked recovery: {type(exc).__name__}"
+            "Vercel date check unavailable; relying on authenticated Firestore "
+            f"and bounded URL-checked recovery: {type(exc).__name__}: {str(exc)[:160]}"
         )
         return None
     finally:

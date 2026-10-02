@@ -52,7 +52,7 @@ jobs:
       - name: Validate automation code
         run: |
           python -m py_compile runner.py sync.py sync_repair.py title_cleaner.py openrouter_title.py announcement_processor.py announcement_backfill.py pdf_integrity.py
-          python -m unittest -v test_title_intelligence.py test_announcements.py test_pdf_integrity.py
+          python -m unittest -v test_title_intelligence.py test_announcements.py test_pdf_integrity.py test_vercel_date.py
 
       - name: Run EduSecure monitor every 5 minutes
         env:
