@@ -26,7 +26,7 @@ from selenium.webdriver.common.keys import Keys
 import runner
 
 
-WEBSITE_URL = "https://eightapdf-study-library.nullreaper-exe.chatgpt.site/?i=1"
+WEBSITE_URL = "https://8apdf.xo.je/"
 DOWNLOAD_DIR = "/tmp/edusecure-downloads"
 BAD_URL_RE = re.compile(
     r"(?:/ParentApp/morelinks\.aspx(?:\?|$)|/images/loader\.gif(?:\?|$)|dashboard\.aspx(?:\?|$)|/login(?:\?|/|$))",
@@ -976,7 +976,13 @@ def read_latest_date_from_website() -> Optional[date]:
             )
             return latest
 
-        print("ERROR: Could not read the latest PDF date from the 8aPDF website.")
+        print("Website date could not be read; Firestore recovery will be used.")
+        return None
+    except Exception as exc:
+        print(
+            "Website preview unavailable; relying on authenticated Firestore "
+            f"and bounded URL-checked recovery: {type(exc).__name__}"
+        )
         return None
     finally:
         try:
@@ -986,20 +992,16 @@ def read_latest_date_from_website() -> Optional[date]:
 
 
 def existing_state_from_website(materials: List[Dict[str, Any]]):
-    """Use Firestore for duplicate URLs/order, but website date for the cutoff."""
-    urls, _firestore_latest, next_order = ORIGINAL_EXISTING_STATE(materials)
+    """Firestore is authoritative for known links; website date is advisory.
 
-    if WEBSITE_LATEST_DATE is None:
-        raise RuntimeError("Website latest PDF date was not established before EduSecure sync")
-
-    effective = _WebsiteBoundaryDate(
-        WEBSITE_LATEST_DATE + timedelta(days=1),
-        WEBSITE_LATEST_DATE,
-    )
-
-    print(f"Website cutoff date being used: {WEBSITE_LATEST_DATE.isoformat()}")
-    print("Same-date and older EduSecure messages are NOT eligible for upload.")
-    return urls, effective, next_order
+    A recent PDF may be missing even when a newer PDF exists, so runner.main
+    applies its bounded lookback and URL-based de-duplication independently.
+    """
+    urls, firestore_latest, next_order = ORIGINAL_EXISTING_STATE(materials)
+    candidates = [d for d in (WEBSITE_LATEST_DATE, firestore_latest) if d]
+    latest = max(candidates) if candidates else None
+    print(f"Existing PDF latest date: {latest}; recent missing PDFs remain eligible.")
+    return urls, latest, next_order
 
 
 # Install all consolidated runtime repairs before main() starts.
@@ -1016,11 +1018,7 @@ def main() -> int:
 
     WEBSITE_LATEST_DATE = read_latest_date_from_website()
     if WEBSITE_LATEST_DATE is None:
-        print(
-            "Stopping safely: website latest date could not be read, "
-            "so no EduSecure upload will run."
-        )
-        return 2
+        print("Website date unavailable; using authenticated Firestore plus the bounded PDF lookback.")
 
     runner.existing_state = existing_state_from_website
     return runner.main()

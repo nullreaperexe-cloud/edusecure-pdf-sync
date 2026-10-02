@@ -1,0 +1,28 @@
+name: PDF and Announcement Regression Tests
+
+on:
+  pull_request:
+    paths:
+      - "**/*.py"
+      - "requirements.txt"
+      - ".github/workflows/*.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  tests:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+          cache: pip
+      - run: python -m pip install -r requirements.txt
+      - name: Compile and run regression tests (no credentials)
+        run: |
+          python -m py_compile runner.py sync_repair.py announcement_backfill.py announcement_processor.py pdf_integrity.py pdf_integrity_repair.py openrouter_title.py
+          python -m unittest -v test_pdf_integrity.py test_announcements.py test_title_intelligence.py

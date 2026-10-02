@@ -13,6 +13,8 @@ import sync_repair as repair
 
 MAX_MESSAGES = int(os.environ.get("ANNOUNCEMENT_BACKFILL_MAX_MESSAGES", "2000"))
 AI_BATCH_SIZE = int(os.environ.get("ANNOUNCEMENT_AI_BATCH_SIZE", "15"))
+# Nonzero = safe recurring incremental recovery; zero = manual full historical job.
+RECENT_DAYS = int(os.environ.get("ANNOUNCEMENT_BACKFILL_RECENT_DAYS", "0"))
 
 
 def _ai_text(message_text: str, detail_text: str) -> str:
@@ -36,11 +38,12 @@ def main() -> int:
         print("Firebase admin sign-in failed; historical repair will not run.")
         return 2
 
-    if announcements.backfill_completed(id_token):
+    if not RECENT_DAYS and announcements.backfill_completed(id_token):
         print("Final batch repair already completed ✅")
         return 0
 
-    print("=== HISTORICAL EDUSecure ANNOUNCEMENT BATCH AI REPAIR ===")
+    print("=== EDUSecure ANNOUNCEMENT RECOVERY ===")
+    print(f"Recovery window: {RECENT_DAYS or 'full historical'} days")
     print("No announcements collection listing.")
     print("Dates/order are repaired directly from EduSecure message dates.")
     print(f"AI batch size: {AI_BATCH_SIZE}")
@@ -49,7 +52,12 @@ def main() -> int:
     driver = runner.legacy.make_driver()
     processed: Set[str] = set()
     bottom_confirmations = 0
+    old_confirmations = 0
     reached_bottom = False
+    recovery_floor = None
+    if RECENT_DAYS:
+        from datetime import date, timedelta
+        recovery_floor = date.today() - timedelta(days=RECENT_DAYS)
 
     scanned = 0
     opened = 0
@@ -105,6 +113,14 @@ def main() -> int:
 
             scanned += 1
             msg_date = runner.legacy.extract_message_date(message_text)
+            if recovery_floor and msg_date and msg_date < recovery_floor:
+                old_confirmations += 1
+                print(f"Outside recovery window: {msg_date}")
+                if old_confirmations >= 5:
+                    reached_bottom = True  # Complete coverage of requested recent window.
+                    break
+                continue
+            old_confirmations = 0
             saved_position = runner.legacy.get_dashboard_scroll_position(driver)
 
             print(
@@ -140,6 +156,40 @@ def main() -> int:
             source_id = announcements.stable_message_id(message_text, msg_date)
             valid_source_ids.add(source_id)
 
+            existing_document_name = ""
+            if RECENT_DAYS:
+                existing_document_name = announcements.announcement_document_name(source_id)
+                check = announcements.firestore_request(
+                    "GET",
+                    "https://firestore.googleapis.com/v1/" + existing_document_name,
+                    params={"key": announcements.FIREBASE_API_KEY},
+                    id_token=id_token,
+                    timeout=25,
+                )
+                if check.ok:
+                    existing = check.json().get("fields") or {}
+                    published = announcements.decode_value(existing.get("published") or {}) is True
+                    ai_state = announcements.clean(
+                        announcements.decode_value(existing.get("aiStatus") or {})
+                    )
+                    valid_title = announcements.clean(
+                        announcements.decode_value(existing.get("title") or {})
+                    )
+                    if published and ai_state == "complete" and valid_title and valid_title != "Processing Announcement":
+                        print("Recent announcement already published and complete -> skip")
+                        runner.legacy.return_dashboard_and_restore_v25(
+                            driver, app_handle, saved_position,
+                        )
+                        continue
+                    print("Recent existing announcement incomplete -> republish/refine")
+                elif check.status_code != 404:
+                    failures += 1
+                    print(f"Announcement existence check failed: HTTP {check.status_code}")
+                    runner.legacy.return_dashboard_and_restore_v25(
+                        driver, app_handle, saved_position,
+                    )
+                    continue
+
             provisional = announcements.build_fallback_announcement(
                 message_text,
                 detail_text,
@@ -154,8 +204,14 @@ def main() -> int:
                 provisional,
                 msg_date,
                 id_token,
+                existing_document_name=existing_document_name if existing_document_name and check.ok else "",
+                preserve_created_at=bool(existing_document_name and check.ok),
             ):
                 failures += 1
+                runner.legacy.return_dashboard_and_restore_v25(
+                    driver, app_handle, saved_position,
+                )
+                continue
 
             ai_text = _ai_text(message_text, detail_text)
             if ai_text:
@@ -181,11 +237,15 @@ def main() -> int:
             f"Historical scan complete: {len(pending)} announcements queued for batch AI."
         )
 
-        cleanup_stats = announcements.cleanup_legacy_announcement_documents(
-            valid_source_ids,
-            id_token,
-        )
-        print(f"Legacy cleanup stats: {cleanup_stats}")
+        # Never delete historical documents from a partial recent-window scan.
+        # Destructive legacy cleanup also needs explicit opt-in for full scans.
+        if not RECENT_DAYS and reached_bottom and failures == 0 and os.environ.get("ALLOW_DESTRUCTIVE_ANNOUNCEMENT_CLEANUP") == "1":
+            cleanup_stats = announcements.cleanup_legacy_announcement_documents(
+                valid_source_ids, id_token,
+            )
+            print(f"Legacy cleanup stats: {cleanup_stats}")
+        else:
+            print("Destructive legacy cleanup skipped (safe recovery mode).")
 
         repaired = 0
         ai_retries = 0
@@ -269,7 +329,7 @@ def main() -> int:
 
         if reached_bottom and failures == 0:
             if ai_retries == 0:
-                if not announcements.mark_backfill_completed(id_token, scanned, repaired):
+                if not RECENT_DAYS and not announcements.mark_backfill_completed(id_token, scanned, repaired):
                     print("Backfill succeeded but completion state could not be saved.")
                     return 1
                 print("Historical announcement backfill + AI refinement complete ✅")

@@ -878,9 +878,45 @@ def process_no_attachment_message(
 
     claim_status = claim_announcement(source_id, message_date, id_token)
     if claim_status == "existing":
-        existing_source_ids.add(source_id)
-        print("Announcement document already exists -> skip before AI call")
-        return "duplicate", None
+        # Earlier interrupted runs could leave published=False placeholders.
+        # Their deterministic IDs must not silently block publication forever.
+        document_url = (
+            "https://firestore.googleapis.com/v1/"
+            + announcement_document_name(source_id)
+        )
+        existing_response = firestore_request(
+            "GET", document_url,
+            params={"key": FIREBASE_API_KEY},
+            id_token=id_token, timeout=25,
+        )
+        if not existing_response.ok:
+            print(
+                "Existing announcement state could not be confirmed "
+                f"(HTTP {existing_response.status_code}); retry next cycle"
+            )
+            return "failed", None
+        old_fields = existing_response.json().get("fields") or {}
+        published = decode_value(old_fields.get("published") or {}) is True
+        old_title = clean(decode_value(old_fields.get("title") or {}))
+        if published and old_title and old_title != "Processing Announcement":
+            existing_source_ids.add(source_id)
+            print("Existing published announcement verified -> skip")
+            return "duplicate", None
+
+        print("Recovering unpublished/incomplete announcement claim")
+        item = build_announcement(
+            message_text, detail_text, message_date,
+            attachment_url=attachment_url,
+        )
+        item["sourceMessageId"] = source_id
+        if upload_announcement(
+            item, message_date, id_token,
+            existing_document_name=announcement_document_name(source_id),
+            preserve_created_at=True,
+        ):
+            existing_source_ids.add(source_id)
+            return "created", item
+        return "failed", item
     if claim_status != "claimed":
         return "failed", None
 

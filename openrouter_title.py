@@ -221,7 +221,7 @@ def generate_title(evidence: Any, subject: Any = "", fallback_title: Any = "") -
             {
                 "role": "system",
                 "content": (
-                    "Write exactly one short title for a Class 8 school material. "
+                    "Write exactly one short title for the supplied school document, regardless of student grade. "
                     "No explanation, no markdown, no date, no school name, no greeting, "
                     "no Circular/Circular No., no session year, no UI words. "
                     "Keep only the actual educational topic/task. Prefer 3-10 words."
