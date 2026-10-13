@@ -44,6 +44,27 @@ def clean(value: Any) -> str:
     return runner.clean(value)
 
 
+ORIGINAL_SANITIZE_TITLE = runner.intelligence.sanitize_title
+
+
+def clean_title_grammar(value: Any) -> str:
+    """Apply only grammar fixes that are proven safe from observed bad titles."""
+    text = clean(value)
+    if not text:
+        return ""
+
+    # EduSecure occasionally truncates a "Regarding ..." heading after "From".
+    # Remove only that orphaned final preposition; valid internal uses such as
+    # "Letter From Principal" must remain unchanged.
+    text = re.sub(r"^(Regarding\s+.+?)\s+From$", r"\1", text, flags=re.I)
+    return text.strip(" -:|,.;")
+
+
+def sanitize_title_with_grammar(value: Any, subject: Any = "") -> str:
+    """Run the established cleaner first, then the narrow grammar safety rule."""
+    return clean_title_grammar(ORIGINAL_SANITIZE_TITLE(value, subject))
+
+
 def normalize_duplicate_text(value: Any) -> str:
     """Stable text normalization used only for duplicate protection."""
     text = clean(value).lower()
@@ -521,6 +542,7 @@ def list_and_cleanup_materials(id_token: str) -> List[Dict[str, Any]]:
     kept: List[Dict[str, Any]] = []
     removed = 0
     subjects_fixed = 0
+    titles_fixed = 0
 
     for item in materials:
         url = clean(item.get("pdf_url"))
@@ -549,6 +571,34 @@ def list_and_cleanup_materials(id_token: str) -> List[Dict[str, Any]]:
                     item["subject"] = corrected
                     subjects_fixed += 1
                     print(f"Corrected existing subject: School Diary -> {corrected} | {evidence[:100]}")
+
+        if "edusecure" in source:
+            old_title = clean(item.get("title"))
+            old_description = clean(item.get("description"))
+            subject_for_title = clean(item.get("subject"))
+            baseline_title = ORIGINAL_SANITIZE_TITLE(old_title, subject_for_title)
+            grammar_title = sanitize_title_with_grammar(old_title, subject_for_title)
+
+            # Patch existing records only when the new grammar rule itself made
+            # a difference. This avoids re-writing unrelated already-good titles.
+            if old_title and grammar_title != baseline_title:
+                description_update = grammar_title if old_description == old_title else None
+                if runner.intelligence.patch_material_fields(
+                    clean(item.get("_name")),
+                    id_token,
+                    title=grammar_title,
+                    description=description_update,
+                ):
+                    item["title"] = grammar_title
+                    if description_update is not None:
+                        item["description"] = grammar_title
+                    titles_fixed += 1
+                    print(
+                        "Corrected existing title grammar: "
+                        f"{old_title!r} -> {grammar_title!r}"
+                    )
+                else:
+                    print(f"Could not correct existing title grammar: {old_title[:120]}")
 
         kept.append(item)
 
@@ -593,6 +643,8 @@ def list_and_cleanup_materials(id_token: str) -> List[Dict[str, Any]]:
         print(f"Invalid previous EduSecure automation records cleaned: {removed}")
     if subjects_fixed:
         print(f"Existing wrong School Diary subjects corrected: {subjects_fixed}")
+    if titles_fixed:
+        print(f"Existing EduSecure title grammar corrected: {titles_fixed}")
     if duplicate_records_removed:
         print(f"Existing duplicate EduSecure materials removed: {duplicate_records_removed}")
     return deduped
@@ -1125,6 +1177,9 @@ def existing_state_from_website(materials: List[Dict[str, Any]]):
 
 
 # Install all consolidated runtime repairs before main() starts.
+# Monkey-patching the shared title_cleaner module also protects OpenRouter output,
+# semantic duplicate keys and the final Firestore safety gate in runner.py.
+runner.intelligence.sanitize_title = sanitize_title_with_grammar
 runner.list_firestore_materials = list_and_cleanup_materials
 runner.extract_attachment_url = extract_attachment_url
 runner.legacy.make_title = make_message_title
