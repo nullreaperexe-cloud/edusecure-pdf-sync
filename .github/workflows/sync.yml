@@ -16,6 +16,7 @@ on:
       - "announcement_backfill.py"
       - "test_announcements.py"
       - "test_title_intelligence.py"
+      - "test_sync_repair.py"
       - "requirements.txt"
       - ".github/workflows/sync.yml"
   schedule:
@@ -50,9 +51,10 @@ jobs:
         run: python -m pip install -r requirements.txt
 
       - name: Validate automation code
+        id: validate
         run: |
           python -m py_compile runner.py sync.py sync_repair.py title_cleaner.py openrouter_title.py announcement_processor.py announcement_backfill.py pdf_integrity.py
-          python -m unittest -v test_title_intelligence.py test_announcements.py test_pdf_integrity.py test_vercel_date.py
+          python -m unittest -v test_title_intelligence.py test_sync_repair.py test_announcements.py test_pdf_integrity.py test_vercel_date.py
 
       - name: Run EduSecure monitor every 5 minutes
         env:
@@ -67,6 +69,9 @@ jobs:
           set +e
           END_TIME=$(( $(date +%s) + 19800 ))
           ITERATION=0
+          TOTAL_FAILURES=0
+          CONSECUTIVE_FAILURES=0
+          LAST_EXIT_CODE=0
 
           echo "24/7 worker started. sync_repair.py will run every 5 minutes for about 5.5 hours."
 
@@ -78,8 +83,13 @@ jobs:
 
             python sync_repair.py
             EXIT_CODE=$?
+            LAST_EXIT_CODE=$EXIT_CODE
             if [ "$EXIT_CODE" -ne 0 ]; then
+              TOTAL_FAILURES=$((TOTAL_FAILURES + 1))
+              CONSECUTIVE_FAILURES=$((CONSECUTIVE_FAILURES + 1))
               echo "Check #${ITERATION} exited with code ${EXIT_CODE}. Keeping 24/7 worker alive for the next check."
+            else
+              CONSECUTIVE_FAILURES=0
             fi
 
             NOW=$(date +%s)
@@ -93,7 +103,11 @@ jobs:
             fi
           done
 
-          echo "Worker window complete; next worker will be queued now."
+          echo "Worker window complete. Failed cycles: ${TOTAL_FAILURES}; consecutive failures at end: ${CONSECUTIVE_FAILURES}."
+          if [ "$LAST_EXIT_CODE" -ne 0 ]; then
+            echo "Final EduSecure check failed with code ${LAST_EXIT_CODE}; marking this worker unhealthy after diagnostics."
+            exit "$LAST_EXIT_CODE"
+          fi
           exit 0
 
       - name: Upload sync diagnostics
@@ -110,7 +124,7 @@ jobs:
       - name: Queue next 24/7 worker
         # Only a healthy completed worker may hand off to the next worker.
         # Validation failures/cancelled deploys must never create a dispatch loop.
-        if: success()
+        if: always() && !cancelled() && steps.validate.outcome == 'success'
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
