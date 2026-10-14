@@ -15,6 +15,7 @@ FIREBASE_PROJECT_ID = intelligence.FIREBASE_PROJECT_ID
 FIREBASE_API_KEY = intelligence.FIREBASE_API_KEY
 ANNOUNCEMENTS_COLLECTION = "announcements"
 BACKFILL_STATE_DOCUMENT = "automation_state_announcement_backfill_v5_all_messages"
+LAST_FIRESTORE_STATUS = 0
 
 ALLOWED_CATEGORIES = (
     "Tests",
@@ -55,6 +56,7 @@ def firestore_request(
     attempts: int = 5,
 ):
     """Firestore request with bounded retry for rate limits/transient errors."""
+    global LAST_FIRESTORE_STATUS
     retryable = {429, 500, 502, 503, 504}
     last = None
 
@@ -68,6 +70,7 @@ def firestore_request(
             timeout=timeout,
         )
         last = response
+        LAST_FIRESTORE_STATUS = response.status_code
 
         if response.status_code not in retryable:
             return response
@@ -106,6 +109,10 @@ def firestore_request(
         time.sleep(wait_seconds)
 
     return last
+
+
+def firestore_is_throttled() -> bool:
+    return LAST_FIRESTORE_STATUS == 429
 
 
 def decode_value(value: Dict[str, Any]) -> Any:
