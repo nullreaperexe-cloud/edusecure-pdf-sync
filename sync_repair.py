@@ -37,11 +37,14 @@ BAD_URL_RE = re.compile(
 ORIGINAL_LIST = runner.list_firestore_materials
 ORIGINAL_EXISTING_STATE = runner.existing_state
 ORIGINAL_UPLOAD_FIRESTORE = runner.upload_firestore
-ORIGINAL_ANNOUNCEMENT_PROCESS = runner.announcements.process_no_attachment_message
+ANNOUNCEMENT_MODULE = runner.announcements
+ORIGINAL_ANNOUNCEMENT_PROCESS = ANNOUNCEMENT_MODULE.process_no_attachment_message
 WEBSITE_LATEST_DATE: Optional[date] = None
 SEEN_MESSAGE_SIGNATURES: Set[str] = set()
 
-RUNTIME_CACHE_DIR = Path(".edusecure_runtime")
+# v2 namespace intentionally discards the first experimental cache, which was
+# created while unit tests still shared the announcement module monkey-patch.
+RUNTIME_CACHE_DIR = Path(".edusecure_runtime_v2")
 MATERIAL_CACHE_FILE = RUNTIME_CACHE_DIR / "materials.json"
 ANNOUNCEMENT_CACHE_FILE = RUNTIME_CACHE_DIR / "announcements.json"
 ANNOUNCEMENT_COOLDOWN_FILE = RUNTIME_CACHE_DIR / "announcement_cooldown.json"
@@ -1336,7 +1339,7 @@ def process_no_attachment_message_cached(
     existing_source_ids: Set[str],
     attachment_url: str = "",
 ):
-    source_id = runner.announcements.stable_message_id(message_text, message_date)
+    source_id = ANNOUNCEMENT_MODULE.stable_message_id(message_text, message_date)
 
     cached_ids = _load_cached_announcement_ids()
     if cached_ids is None:
@@ -1349,7 +1352,7 @@ def process_no_attachment_message_cached(
             return "retry", None
 
         try:
-            cached_ids = runner.announcements.list_complete_source_ids(id_token)
+            cached_ids = ANNOUNCEMENT_MODULE.list_complete_source_ids(id_token)
             _save_cached_announcement_ids(cached_ids)
             _clear_announcement_cooldown()
             print(
@@ -1384,7 +1387,7 @@ def process_no_attachment_message_cached(
         cached_ids.add(source_id)
         _save_cached_announcement_ids(cached_ids)
         _clear_announcement_cooldown()
-    elif status == "failed" and runner.announcements.firestore_is_throttled():
+    elif status == "failed" and ANNOUNCEMENT_MODULE.firestore_is_throttled():
         _set_announcement_cooldown()
         print("Firestore 429 detected; converting announcement failure to safe retry.")
         return "retry", item
@@ -1392,13 +1395,29 @@ def process_no_attachment_message_cached(
     return status, item
 
 
+class _RunnerAnnouncementProxy:
+    """Override only runner's live announcement call without mutating the module.
+
+    Keeping the original announcement_processor module untouched prevents unit
+    tests and maintenance scripts from accidentally using runtime cache behavior.
+    """
+    def __init__(self, module: Any):
+        self._module = module
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._module, name)
+
+    def process_no_attachment_message(self, *args: Any, **kwargs: Any):
+        return process_no_attachment_message_cached(*args, **kwargs)
+
+
 # Install all consolidated runtime repairs before main() starts.
-# Monkey-patching the shared title_cleaner module also protects OpenRouter output,
-# semantic duplicate keys and the final Firestore safety gate in runner.py.
+# Monkey-patching the shared title_cleaner sanitizer is intentional: it protects
+# OpenRouter output, semantic duplicate keys and the final Firestore safety gate.
 runner.intelligence.sanitize_title = sanitize_title_with_grammar
 runner.list_firestore_materials = list_and_cleanup_materials
 runner.upload_firestore = upload_firestore_with_cache
-runner.announcements.process_no_attachment_message = process_no_attachment_message_cached
+runner.announcements = _RunnerAnnouncementProxy(ANNOUNCEMENT_MODULE)
 runner.extract_attachment_url = extract_attachment_url
 runner.legacy.make_title = make_message_title
 runner.legacy.detect_subject = detect_subject_smart
