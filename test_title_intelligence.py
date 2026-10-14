@@ -52,6 +52,16 @@ class TitleSubjectIntelligenceTests(unittest.TestCase):
             "Correction in Q No. 11 Exercise 7.2",
         )
 
+    def test_dangling_from_is_removed_but_internal_from_is_preserved(self):
+        self.assertEqual(
+            intelligence.sanitize_title("Regarding Short Leaves From", "Circular"),
+            "Regarding Short Leaves",
+        )
+        self.assertEqual(
+            intelligence.sanitize_title("Letter From Principal", "Circular"),
+            "Letter From Principal",
+        )
+
     def test_title_cleaner_is_idempotent(self):
         samples = [
             "Manav Mangal SMART SCHOOL-88 Circular Dear Students Good morning Kindly note the correction in Q no11 Exercise 7.2. Thanks",
