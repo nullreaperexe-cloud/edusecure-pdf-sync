@@ -72,7 +72,26 @@ def firestore_request(
         if response.status_code not in retryable:
             return response
 
-        wait_seconds = min(12, 1.5 * (2 ** attempt))
+        # A 429 is normally a project quota/rate-limit signal, not a request
+        # that benefits from being hammered five times for every announcement.
+        # Retry it once with a longer pause; callers can then defer the whole
+        # batch/cycle instead of multiplying the quota pressure.
+        max_for_status = min(attempts, 2) if response.status_code == 429 else attempts
+        if attempt + 1 >= max_for_status:
+            try:
+                message = clean((response.json().get("error") or {}).get("message"))
+            except Exception:
+                message = ""
+            print(
+                f"Firestore HTTP {response.status_code}; retry budget exhausted"
+                + (f": {message[:220]}" if message else "")
+            )
+            return response
+
+        if response.status_code == 429:
+            wait_seconds = 20.0
+        else:
+            wait_seconds = min(20, 1.5 * (2 ** attempt))
         retry_after = response.headers.get("Retry-After")
         try:
             if retry_after:
@@ -82,7 +101,7 @@ def firestore_request(
 
         print(
             f"Firestore HTTP {response.status_code}; "
-            f"retrying in {wait_seconds:.1f}s ({attempt + 1}/{attempts})"
+            f"retrying in {wait_seconds:.1f}s ({attempt + 1}/{max_for_status})"
         )
         time.sleep(wait_seconds)
 
@@ -166,6 +185,60 @@ def load_existing_state(id_token: str) -> Tuple[Set[str], Optional[date]]:
 
 def list_existing_source_ids(id_token: str) -> Set[str]:
     source_ids, _latest = load_existing_state(id_token)
+    return source_ids
+
+
+def list_complete_source_ids(id_token: str) -> Set[str]:
+    """Load only announcements that are already safely published and complete.
+
+    This is intentionally one collection read per runtime-cache refresh. The live
+    sync can then skip deterministic IDs locally instead of doing POST+GET probes
+    for every old announcement every few minutes.
+    """
+    base = (
+        f"https://firestore.googleapis.com/v1/projects/{FIREBASE_PROJECT_ID}"
+        f"/databases/(default)/documents/{ANNOUNCEMENTS_COLLECTION}"
+    )
+    params: Dict[str, Any] = {"pageSize": 1000, "key": FIREBASE_API_KEY}
+    source_ids: Set[str] = set()
+
+    while True:
+        response = firestore_request(
+            "GET",
+            base,
+            params=params,
+            id_token=id_token,
+            timeout=30,
+            attempts=2,
+        )
+        if response.status_code == 404:
+            return source_ids
+        response.raise_for_status()
+        body = response.json()
+
+        for raw in body.get("documents", []):
+            fields = raw.get("fields") or {}
+            source_id = clean(decode_value(fields.get("sourceMessageId") or {}))
+            published = decode_value(fields.get("published") or {}) is True
+            ai_state = clean(decode_value(fields.get("aiStatus") or {})).lower()
+            title = clean(decode_value(fields.get("title") or {}))
+            if (
+                source_id
+                and published
+                and ai_state == "complete"
+                and title
+                and title != "Processing Announcement"
+                and source_id != BACKFILL_STATE_DOCUMENT
+                and not source_id.startswith("__announcement_backfill")
+                and not source_id.startswith("automation_state_announcement_backfill")
+            ):
+                source_ids.add(source_id)
+
+        token = body.get("nextPageToken")
+        if not token:
+            break
+        params["pageToken"] = token
+
     return source_ids
 
 
