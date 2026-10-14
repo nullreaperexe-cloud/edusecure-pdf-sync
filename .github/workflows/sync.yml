@@ -28,10 +28,10 @@ permissions:
   actions: write
 
 concurrency:
-  group: edusecure-24x7-worker
-  # A code push deploys immediately by replacing the old worker.
-  # Scheduled/watchdog/dispatch runs never kill a healthy active worker.
-  cancel-in-progress: ${{ github.event_name == 'push' }}
+  # v2 uses one bounded sync cycle per run. A distinct group lets this repaired
+  # worker deploy immediately even if an older 5.5-hour worker is still alive.
+  group: edusecure-5m-worker-v2
+  cancel-in-progress: false
 
 jobs:
   sync:
@@ -64,7 +64,7 @@ jobs:
           python -m py_compile runner.py sync.py sync_repair.py title_cleaner.py openrouter_title.py announcement_processor.py announcement_backfill.py pdf_integrity.py
           python -m unittest -v test_title_intelligence.py test_sync_repair.py test_announcements.py test_pdf_integrity.py test_vercel_date.py
 
-      - name: Run EduSecure monitor every 5 minutes
+      - name: Run one EduSecure sync cycle
         env:
           PYTHONUNBUFFERED: "1"
           EDUSECURE_USERNAME: ${{ secrets.EDUSECURE_USERNAME }}
@@ -75,48 +75,26 @@ jobs:
           OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
         run: |
           set +e
-          END_TIME=$(( $(date +%s) + 19800 ))
-          ITERATION=0
-          TOTAL_FAILURES=0
-          CONSECUTIVE_FAILURES=0
-          LAST_EXIT_CODE=0
+          CYCLE_START=$(date +%s)
+          echo "===== EduSecure check at $(date -u '+%Y-%m-%d %H:%M:%S UTC') ====="
 
-          echo "24/7 worker started. sync_repair.py will run every 5 minutes for about 5.5 hours."
+          python sync_repair.py
+          EXIT_CODE=$?
 
-          while [ "$(date +%s)" -lt "$END_TIME" ]; do
-            ITERATION=$((ITERATION + 1))
-            CYCLE_START=$(date +%s)
-            echo ""
-            echo "===== EduSecure check #${ITERATION} at $(date -u '+%Y-%m-%d %H:%M:%S UTC') ====="
-
-            python sync_repair.py
-            EXIT_CODE=$?
-            LAST_EXIT_CODE=$EXIT_CODE
-            if [ "$EXIT_CODE" -ne 0 ]; then
-              TOTAL_FAILURES=$((TOTAL_FAILURES + 1))
-              CONSECUTIVE_FAILURES=$((CONSECUTIVE_FAILURES + 1))
-              echo "Check #${ITERATION} exited with code ${EXIT_CODE}. Keeping 24/7 worker alive for the next check."
-            else
-              CONSECUTIVE_FAILURES=0
-            fi
-
-            NOW=$(date +%s)
-            ELAPSED=$((NOW - CYCLE_START))
-            SLEEP_FOR=$((300 - ELAPSED))
-            if [ "$SLEEP_FOR" -gt 0 ] && [ "$((NOW + SLEEP_FOR))" -lt "$END_TIME" ]; then
-              echo "Next EduSecure check in ${SLEEP_FOR} seconds."
-              sleep "$SLEEP_FOR"
-            else
-              break
-            fi
-          done
-
-          echo "Worker window complete. Failed cycles: ${TOTAL_FAILURES}; consecutive failures at end: ${CONSECUTIVE_FAILURES}."
-          if [ "$LAST_EXIT_CODE" -ne 0 ]; then
-            echo "Final EduSecure check failed with code ${LAST_EXIT_CODE}; marking this worker unhealthy after diagnostics."
-            exit "$LAST_EXIT_CODE"
+          NOW=$(date +%s)
+          ELAPSED=$((NOW - CYCLE_START))
+          SLEEP_FOR=$((300 - ELAPSED))
+          if [ "$SLEEP_FOR" -gt 0 ]; then
+            echo "Cycle finished early; waiting ${SLEEP_FOR}s to preserve a minimum 5-minute cadence."
+            sleep "$SLEEP_FOR"
           fi
-          exit 0
+
+          if [ "$EXIT_CODE" -ne 0 ]; then
+            echo "EduSecure cycle failed with code ${EXIT_CODE}."
+          else
+            echo "EduSecure cycle completed cleanly."
+          fi
+          exit "$EXIT_CODE"
 
       - name: Upload sync diagnostics
         if: always()
@@ -129,14 +107,14 @@ jobs:
           if-no-files-found: ignore
           retention-days: 7
 
-      - name: Queue next 24/7 worker
-        # Only a healthy completed worker may hand off to the next worker.
-        # Validation failures/cancelled deploys must never create a dispatch loop.
+      - name: Queue next 5-minute worker
+        # Validation must pass, but a transient live-sync failure still hands off
+        # so the next bounded cycle can self-heal instead of stopping automation.
         if: always() && !cancelled() && steps.validate.outcome == 'success'
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          echo "Queueing the next EduSecure 24/7 worker..."
+          echo "Queueing the next EduSecure 5-minute worker..."
           curl --fail-with-body -L \
             -X POST \
             -H "Accept: application/vnd.github+json" \
