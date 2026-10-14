@@ -7,6 +7,27 @@ import openrouter_title as ai_title
 
 
 class AnnouncementProcessorTests(unittest.TestCase):
+    @patch("announcement_processor.time.sleep")
+    @patch("announcement_processor.requests.request")
+    def test_firestore_429_retries_only_once(self, mocked_request, _sleep):
+        response = unittest.mock.Mock()
+        response.status_code = 429
+        response.headers = {}
+        response.json.return_value = {
+            "error": {"message": "Quota exceeded."}
+        }
+        mocked_request.return_value = response
+
+        result = announcements.firestore_request(
+            "GET",
+            "https://firestore.googleapis.com/v1/test",
+            attempts=5,
+        )
+
+        self.assertEqual(result.status_code, 429)
+        self.assertEqual(mocked_request.call_count, 2)
+        self.assertTrue(announcements.firestore_is_throttled())
+
     def test_stable_message_id_is_repeatable(self):
         day = date(2026, 9, 21)
         first = announcements.stable_message_id("Science test tomorrow", day)
