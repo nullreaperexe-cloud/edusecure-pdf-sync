@@ -339,6 +339,16 @@ def main() -> int:
     id_token = firebase_sign_in()
     try:
         materials = list_firestore_materials(id_token)
+    except requests.HTTPError as exc:
+        if getattr(exc.response, "status_code", None) == 429:
+            print(
+                "Firestore read quota is temporarily throttled. "
+                "Deferring this sync cycle safely instead of scanning without "
+                "duplicate state or hammering the quota."
+            )
+            return 0
+        print(f"Could not read Firestore: {exc}")
+        return 2
     except Exception as exc:
         print(f"Could not read Firestore: {exc}")
         return 2
