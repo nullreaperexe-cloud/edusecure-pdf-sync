@@ -484,18 +484,24 @@ def firestore_request_with_retry(
         if response.status_code not in {429, 500, 502, 503, 504}:
             return response
 
-        if attempt == max_attempts:
+        allowed_attempts = min(max_attempts, 2) if response.status_code == 429 else max_attempts
+        if attempt >= allowed_attempts:
             break
 
         retry_after = clean(response.headers.get("Retry-After"))
         try:
-            delay = max(1, min(60, int(float(retry_after)))) if retry_after else min(60, 2 ** attempt)
+            if retry_after:
+                delay = max(20, min(60, int(float(retry_after))))
+            elif response.status_code == 429:
+                delay = 20
+            else:
+                delay = min(60, 2 ** attempt)
         except (TypeError, ValueError):
-            delay = min(60, 2 ** attempt)
+            delay = 20 if response.status_code == 429 else min(60, 2 ** attempt)
 
         print(
             f"Firestore HTTP {response.status_code}; "
-            f"retrying attempt {attempt + 1}/{max_attempts} after {delay}s..."
+            f"retrying attempt {attempt + 1}/{allowed_attempts} after {delay}s..."
         )
         time.sleep(delay)
 
@@ -578,7 +584,16 @@ def patch_material_fields(
 
 def main() -> int:
     token = firebase_sign_in()
-    materials = list_materials(token)
+    try:
+        materials = list_materials(token)
+    except requests.HTTPError as exc:
+        if getattr(exc.response, "status_code", None) == 429:
+            print(
+                "Firestore quota is temporarily throttled; historical title cleanup "
+                "is deferred safely to the next scheduled run."
+            )
+            return 0
+        raise
 
     title_description_only = clean(os.environ.get("TITLE_DESCRIPTION_ONLY")).lower() in {
         "1", "true", "yes", "on"
