@@ -38,6 +38,21 @@ def main() -> int:
         print("Firebase admin sign-in failed; historical repair will not run.")
         return 2
 
+    try:
+        complete_source_ids = announcements.list_complete_source_ids(id_token)
+        print(
+            f"Loaded {len(complete_source_ids)} already-complete announcement IDs "
+            "with one Firestore collection read."
+        )
+    except Exception as exc:
+        if getattr(getattr(exc, "response", None), "status_code", None) == 429:
+            print(
+                "Firestore quota is currently throttled. Recovery is deferred "
+                "without hammering the same quota; the next scheduled run will retry."
+            )
+            return 0
+        raise
+
     if not RECENT_DAYS and announcements.backfill_completed(id_token):
         print("Final batch repair already completed ✅")
         return 0
@@ -156,39 +171,17 @@ def main() -> int:
             source_id = announcements.stable_message_id(message_text, msg_date)
             valid_source_ids.add(source_id)
 
-            existing_document_name = ""
-            if RECENT_DAYS:
-                existing_document_name = announcements.announcement_document_name(source_id)
-                check = announcements.firestore_request(
-                    "GET",
-                    "https://firestore.googleapis.com/v1/" + existing_document_name,
-                    params={"key": announcements.FIREBASE_API_KEY},
-                    id_token=id_token,
-                    timeout=25,
+            if source_id in complete_source_ids:
+                print("Recent announcement already published and complete -> skip")
+                runner.legacy.return_dashboard_and_restore_v25(
+                    driver, app_handle, saved_position,
                 )
-                if check.ok:
-                    existing = check.json().get("fields") or {}
-                    published = announcements.decode_value(existing.get("published") or {}) is True
-                    ai_state = announcements.clean(
-                        announcements.decode_value(existing.get("aiStatus") or {})
-                    )
-                    valid_title = announcements.clean(
-                        announcements.decode_value(existing.get("title") or {})
-                    )
-                    if published and ai_state == "complete" and valid_title and valid_title != "Processing Announcement":
-                        print("Recent announcement already published and complete -> skip")
-                        runner.legacy.return_dashboard_and_restore_v25(
-                            driver, app_handle, saved_position,
-                        )
-                        continue
-                    print("Recent existing announcement incomplete -> republish/refine")
-                elif check.status_code != 404:
-                    failures += 1
-                    print(f"Announcement existence check failed: HTTP {check.status_code}")
-                    runner.legacy.return_dashboard_and_restore_v25(
-                        driver, app_handle, saved_position,
-                    )
-                    continue
+                continue
+
+            # Avoid one Firestore GET per historical message. PATCH the
+            # deterministic document directly; upload_announcement() falls back
+            # to POST on 404 and refreshes an incomplete existing record in place.
+            existing_document_name = announcements.announcement_document_name(source_id)
 
             provisional = announcements.build_fallback_announcement(
                 message_text,
@@ -204,9 +197,18 @@ def main() -> int:
                 provisional,
                 msg_date,
                 id_token,
-                existing_document_name=existing_document_name if existing_document_name and check.ok else "",
-                preserve_created_at=bool(existing_document_name and check.ok),
+                existing_document_name=existing_document_name,
+                preserve_created_at=True,
             ):
+                if announcements.firestore_is_throttled():
+                    print(
+                        "Firestore quota throttled during recovery. Stopping this "
+                        "run immediately so the next scheduled run can resume cleanly."
+                    )
+                    runner.legacy.return_dashboard_and_restore_v25(
+                        driver, app_handle, saved_position,
+                    )
+                    return 0
                 failures += 1
                 runner.legacy.return_dashboard_and_restore_v25(
                     driver, app_handle, saved_position,
@@ -308,7 +310,14 @@ def main() -> int:
                 )
                 if ok:
                     repaired += 1
+                    complete_source_ids.add(item["id"])
                 else:
+                    if announcements.firestore_is_throttled():
+                        print(
+                            "Firestore quota throttled during AI refinement. "
+                            "Deferring remaining refinements to the next run."
+                        )
+                        return 0
                     failures += 1
 
             # Keep well below free-model RPM even when multiple batches are needed.
