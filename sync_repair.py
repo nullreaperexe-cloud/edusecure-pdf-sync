@@ -752,13 +752,12 @@ def list_and_cleanup_materials(id_token: str) -> List[Dict[str, Any]]:
         if "edusecure" in source:
             old_title = clean(item.get("title"))
             old_description = clean(item.get("description"))
-            subject_for_title = clean(item.get("subject"))
-            baseline_title = ORIGINAL_SANITIZE_TITLE(old_title, subject_for_title)
-            grammar_title = sanitize_title_with_grammar(old_title, subject_for_title)
 
-            # Patch existing records only when the new grammar rule itself made
-            # a difference. This avoids re-writing unrelated already-good titles.
-            if old_title and grammar_title != baseline_title:
+            # Existing-record mutation stays deliberately narrower than the full
+            # sanitizer: only the observed orphaned-final-From rule is allowed to
+            # rewrite a stored title during the live sync.
+            grammar_title = clean_title_grammar(old_title)
+            if old_title and grammar_title != old_title:
                 description_update = grammar_title if old_description == old_title else None
                 if runner.intelligence.patch_material_fields(
                     clean(item.get("_name")),
