@@ -1,14 +1,9 @@
 name: Full Subject Audit
 
 on:
+  # Maintenance-only audit. It used to run twice on every title rule edit,
+  # consuming Firestore read quota and causing the live sync's HTTP 429s.
   workflow_dispatch:
-  push:
-    branches:
-      - main
-    paths:
-      - "title_cleaner.py"
-      - "test_title_intelligence.py"
-      - ".github/workflows/subject_audit.yml"
 
 permissions:
   contents: read
