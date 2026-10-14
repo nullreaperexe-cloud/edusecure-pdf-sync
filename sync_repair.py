@@ -36,8 +36,19 @@ BAD_URL_RE = re.compile(
 
 ORIGINAL_LIST = runner.list_firestore_materials
 ORIGINAL_EXISTING_STATE = runner.existing_state
+ORIGINAL_UPLOAD_FIRESTORE = runner.upload_firestore
+ORIGINAL_ANNOUNCEMENT_PROCESS = runner.announcements.process_no_attachment_message
 WEBSITE_LATEST_DATE: Optional[date] = None
 SEEN_MESSAGE_SIGNATURES: Set[str] = set()
+
+RUNTIME_CACHE_DIR = Path(".edusecure_runtime")
+MATERIAL_CACHE_FILE = RUNTIME_CACHE_DIR / "materials.json"
+ANNOUNCEMENT_CACHE_FILE = RUNTIME_CACHE_DIR / "announcements.json"
+ANNOUNCEMENT_COOLDOWN_FILE = RUNTIME_CACHE_DIR / "announcement_cooldown.json"
+CACHE_TTL_SECONDS = int(__import__("os").environ.get("EDUSECURE_CACHE_TTL_SECONDS", "21600"))
+ANNOUNCEMENT_THROTTLE_COOLDOWN_SECONDS = int(
+    __import__("os").environ.get("ANNOUNCEMENT_THROTTLE_COOLDOWN_SECONDS", "1800")
+)
 
 
 def clean(value: Any) -> str:
@@ -63,6 +74,94 @@ def clean_title_grammar(value: Any) -> str:
 def sanitize_title_with_grammar(value: Any, subject: Any = "") -> str:
     """Run the established cleaner first, then the narrow grammar safety rule."""
     return clean_title_grammar(ORIGINAL_SANITIZE_TITLE(value, subject))
+
+
+def _read_runtime_json(path: Path) -> Dict[str, Any]:
+    try:
+        if not path.exists():
+            return {}
+        value = json.loads(path.read_text(encoding="utf-8"))
+        return value if isinstance(value, dict) else {}
+    except Exception:
+        return {}
+
+
+def _write_runtime_json(path: Path, payload: Dict[str, Any]) -> None:
+    try:
+        RUNTIME_CACHE_DIR.mkdir(parents=True, exist_ok=True)
+        temp = path.with_suffix(path.suffix + ".tmp")
+        temp.write_text(
+            json.dumps(payload, ensure_ascii=False, default=str),
+            encoding="utf-8",
+        )
+        temp.replace(path)
+    except Exception as exc:
+        print(f"Runtime cache write skipped for {path.name}: {type(exc).__name__}")
+
+
+def _cache_age_seconds(payload: Dict[str, Any]) -> float:
+    try:
+        return max(0.0, time.time() - float(payload.get("saved_at", 0)))
+    except Exception:
+        return float("inf")
+
+
+def _load_cached_materials(*, allow_stale: bool = False) -> Optional[List[Dict[str, Any]]]:
+    payload = _read_runtime_json(MATERIAL_CACHE_FILE)
+    materials = payload.get("materials")
+    if not isinstance(materials, list):
+        return None
+    age = _cache_age_seconds(payload)
+    if not allow_stale and age > CACHE_TTL_SECONDS:
+        return None
+    return [item for item in materials if isinstance(item, dict)]
+
+
+def _save_cached_materials(materials: List[Dict[str, Any]]) -> None:
+    _write_runtime_json(
+        MATERIAL_CACHE_FILE,
+        {"saved_at": time.time(), "materials": materials},
+    )
+
+
+def _load_cached_announcement_ids(*, allow_stale: bool = False) -> Optional[Set[str]]:
+    payload = _read_runtime_json(ANNOUNCEMENT_CACHE_FILE)
+    ids = payload.get("complete_source_ids")
+    if not isinstance(ids, list):
+        return None
+    age = _cache_age_seconds(payload)
+    if not allow_stale and age > CACHE_TTL_SECONDS:
+        return None
+    return {clean(value) for value in ids if clean(value)}
+
+
+def _save_cached_announcement_ids(source_ids: Set[str]) -> None:
+    _write_runtime_json(
+        ANNOUNCEMENT_CACHE_FILE,
+        {"saved_at": time.time(), "complete_source_ids": sorted(source_ids)},
+    )
+
+
+def _announcement_cooldown_active() -> bool:
+    payload = _read_runtime_json(ANNOUNCEMENT_COOLDOWN_FILE)
+    try:
+        return float(payload.get("until", 0)) > time.time()
+    except Exception:
+        return False
+
+
+def _set_announcement_cooldown() -> None:
+    _write_runtime_json(
+        ANNOUNCEMENT_COOLDOWN_FILE,
+        {"until": time.time() + ANNOUNCEMENT_THROTTLE_COOLDOWN_SECONDS},
+    )
+
+
+def _clear_announcement_cooldown() -> None:
+    try:
+        ANNOUNCEMENT_COOLDOWN_FILE.unlink(missing_ok=True)
+    except Exception:
+        pass
 
 
 def normalize_duplicate_text(value: Any) -> str:
@@ -538,7 +637,25 @@ def firestore_update_subject(document_name: str, subject: str, id_token: str) ->
 
 def list_and_cleanup_materials(id_token: str) -> List[Dict[str, Any]]:
     """Clean bad records, repair subjects, and remove duplicate EduSecure materials."""
-    materials = ORIGINAL_LIST(id_token)
+    cached = _load_cached_materials()
+    if cached is not None:
+        print(
+            f"Using runtime-cached Firestore material state: {len(cached)} records "
+            "(avoids full collection reads every sync cycle)."
+        )
+        return cached
+
+    stale = _load_cached_materials(allow_stale=True)
+    try:
+        materials = ORIGINAL_LIST(id_token)
+    except Exception as exc:
+        if stale is not None:
+            print(
+                "Live Firestore material refresh unavailable; using stale runtime "
+                f"cache with {len(stale)} records: {type(exc).__name__}"
+            )
+            return stale
+        raise
     kept: List[Dict[str, Any]] = []
     removed = 0
     subjects_fixed = 0
@@ -647,6 +764,8 @@ def list_and_cleanup_materials(id_token: str) -> List[Dict[str, Any]]:
         print(f"Existing EduSecure title grammar corrected: {titles_fixed}")
     if duplicate_records_removed:
         print(f"Existing duplicate EduSecure materials removed: {duplicate_records_removed}")
+    _save_cached_materials(deduped)
+    print(f"Runtime material cache refreshed with {len(deduped)} records.")
     return deduped
 
 
@@ -1176,11 +1295,110 @@ def existing_state_from_website(materials: List[Dict[str, Any]]):
     return urls, latest, next_order
 
 
+def upload_firestore_with_cache(
+    item: Dict[str, str],
+    source_date: date,
+    order: int,
+    id_token: str,
+) -> bool:
+    ok = ORIGINAL_UPLOAD_FIRESTORE(item, source_date, order, id_token)
+    if not ok:
+        return False
+
+    materials = _load_cached_materials(allow_stale=True) or []
+    pdf_url = clean(item.get("url") or item.get("pdf_url"))
+    normalized = pdf_url.lower()
+    if normalized:
+        materials = [
+            row for row in materials
+            if clean(row.get("pdf_url")).lower() != normalized
+        ]
+    materials.append(
+        {
+            "title": clean(item.get("title")),
+            "description": clean(item.get("description")) or clean(item.get("title")),
+            "subject": clean(item.get("subject")),
+            "pdf_url": pdf_url,
+            "source": "EduSecure GitHub Sync",
+            "source_date": source_date.isoformat(),
+            "order": order,
+        }
+    )
+    _save_cached_materials(materials)
+    return True
+
+
+def process_no_attachment_message_cached(
+    message_text: str,
+    detail_text: str,
+    message_date: Optional[date],
+    id_token: str,
+    existing_source_ids: Set[str],
+    attachment_url: str = "",
+):
+    source_id = runner.announcements.stable_message_id(message_text, message_date)
+
+    cached_ids = _load_cached_announcement_ids()
+    if cached_ids is None:
+        stale_ids = _load_cached_announcement_ids(allow_stale=True)
+        if _announcement_cooldown_active():
+            if stale_ids is not None and source_id in stale_ids:
+                existing_source_ids.add(source_id)
+                return "duplicate", None
+            print("Firestore announcement writes deferred during throttle cooldown.")
+            return "retry", None
+
+        try:
+            cached_ids = runner.announcements.list_complete_source_ids(id_token)
+            _save_cached_announcement_ids(cached_ids)
+            _clear_announcement_cooldown()
+            print(
+                f"Runtime announcement cache refreshed with {len(cached_ids)} "
+                "published complete IDs."
+            )
+        except Exception as exc:
+            if getattr(getattr(exc, "response", None), "status_code", None) == 429:
+                _set_announcement_cooldown()
+                cached_ids = stale_ids
+                if cached_ids is not None and source_id in cached_ids:
+                    existing_source_ids.add(source_id)
+                    return "duplicate", None
+                print("Firestore quota throttled; announcement processing deferred safely.")
+                return "retry", None
+            raise
+
+    if source_id in cached_ids:
+        existing_source_ids.add(source_id)
+        return "duplicate", None
+
+    status, item = ORIGINAL_ANNOUNCEMENT_PROCESS(
+        message_text=message_text,
+        detail_text=detail_text,
+        message_date=message_date,
+        id_token=id_token,
+        existing_source_ids=existing_source_ids,
+        attachment_url=attachment_url,
+    )
+
+    if status in {"created", "duplicate"}:
+        cached_ids.add(source_id)
+        _save_cached_announcement_ids(cached_ids)
+        _clear_announcement_cooldown()
+    elif status == "failed" and runner.announcements.firestore_is_throttled():
+        _set_announcement_cooldown()
+        print("Firestore 429 detected; converting announcement failure to safe retry.")
+        return "retry", item
+
+    return status, item
+
+
 # Install all consolidated runtime repairs before main() starts.
 # Monkey-patching the shared title_cleaner module also protects OpenRouter output,
 # semantic duplicate keys and the final Firestore safety gate in runner.py.
 runner.intelligence.sanitize_title = sanitize_title_with_grammar
 runner.list_firestore_materials = list_and_cleanup_materials
+runner.upload_firestore = upload_firestore_with_cache
+runner.announcements.process_no_attachment_message = process_no_attachment_message_cached
 runner.extract_attachment_url = extract_attachment_url
 runner.legacy.make_title = make_message_title
 runner.legacy.detect_subject = detect_subject_smart
