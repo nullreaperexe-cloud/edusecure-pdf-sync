@@ -44,10 +44,10 @@ jobs:
       - name: Restore runtime Firestore cache
         uses: actions/cache@v4
         with:
-          path: .edusecure_runtime
-          key: edusecure-runtime-${{ github.run_id }}
+          path: .edusecure_runtime_v2
+          key: edusecure-runtime-v2-${{ github.run_id }}
           restore-keys: |
-            edusecure-runtime-
+            edusecure-runtime-v2-
 
       - name: Set up Python
         uses: actions/setup-python@v6
