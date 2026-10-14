@@ -1,1 +1,1 @@
-Trigger initial safe recent announcement recovery (2026-10-02).
+Trigger safe recent announcement recovery after Firestore quota repairs (2026-10-14).
