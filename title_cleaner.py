@@ -363,6 +363,11 @@ def sanitize_title(value: Any, subject: Any = "") -> str:
     text = re.sub(r"\bcorrection\s+in\b", "Correction in", text, count=1, flags=re.I)
     text = re.sub(r"\s+", " ", text).strip(" -:|,.;")
 
+    # Observed EduSecure grammar failure: a truncated "Regarding ..." title can
+    # end in an orphaned "From". Keep internal/valid uses such as
+    # "Letter From Principal" unchanged.
+    text = re.sub(r"^(Regarding\s+.+?)\s+From$", r"\1", text, flags=re.I)
+
     if text:
         return text[:160].rstrip(" -:|,.;")
 
