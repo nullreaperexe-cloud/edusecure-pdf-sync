@@ -47,8 +47,12 @@ SEEN_MESSAGE_SIGNATURES: Set[str] = set()
 RUNTIME_CACHE_DIR = Path(".edusecure_runtime_v2")
 MATERIAL_CACHE_FILE = RUNTIME_CACHE_DIR / "materials.json"
 ANNOUNCEMENT_CACHE_FILE = RUNTIME_CACHE_DIR / "announcements.json"
+MATERIAL_COOLDOWN_FILE = RUNTIME_CACHE_DIR / "material_cooldown.json"
 ANNOUNCEMENT_COOLDOWN_FILE = RUNTIME_CACHE_DIR / "announcement_cooldown.json"
 CACHE_TTL_SECONDS = int(__import__("os").environ.get("EDUSECURE_CACHE_TTL_SECONDS", "21600"))
+MATERIAL_THROTTLE_COOLDOWN_SECONDS = int(
+    __import__("os").environ.get("MATERIAL_THROTTLE_COOLDOWN_SECONDS", "1800")
+)
 ANNOUNCEMENT_THROTTLE_COOLDOWN_SECONDS = int(
     __import__("os").environ.get("ANNOUNCEMENT_THROTTLE_COOLDOWN_SECONDS", "1800")
 )
@@ -142,6 +146,38 @@ def _save_cached_announcement_ids(source_ids: Set[str]) -> None:
     _write_runtime_json(
         ANNOUNCEMENT_CACHE_FILE,
         {"saved_at": time.time(), "complete_source_ids": sorted(source_ids)},
+    )
+
+
+def _material_cooldown_active() -> bool:
+    payload = _read_runtime_json(MATERIAL_COOLDOWN_FILE)
+    try:
+        return float(payload.get("until", 0)) > time.time()
+    except Exception:
+        return False
+
+
+def _set_material_cooldown() -> None:
+    _write_runtime_json(
+        MATERIAL_COOLDOWN_FILE,
+        {"until": time.time() + MATERIAL_THROTTLE_COOLDOWN_SECONDS},
+    )
+
+
+def _clear_material_cooldown() -> None:
+    try:
+        MATERIAL_COOLDOWN_FILE.unlink(missing_ok=True)
+    except Exception:
+        pass
+
+
+def _raise_material_throttle_deferred() -> None:
+    response = requests.Response()
+    response.status_code = 429
+    response._content = b'{"error":{"message":"Firestore material cooldown active"}}'
+    raise requests.HTTPError(
+        "Firestore material cooldown active",
+        response=response,
     )
 
 
@@ -649,8 +685,29 @@ def list_and_cleanup_materials(id_token: str) -> List[Dict[str, Any]]:
         return cached
 
     stale = _load_cached_materials(allow_stale=True)
+    if _material_cooldown_active():
+        if stale is not None:
+            print(
+                "Firestore material refresh is in throttle cooldown; using stale "
+                f"runtime cache with {len(stale)} records."
+            )
+            return stale
+        print("Firestore material refresh is in throttle cooldown; deferring cycle.")
+        _raise_material_throttle_deferred()
+
     try:
         materials = ORIGINAL_LIST(id_token)
+        _clear_material_cooldown()
+    except requests.HTTPError as exc:
+        if getattr(exc.response, "status_code", None) == 429:
+            _set_material_cooldown()
+        if stale is not None:
+            print(
+                "Live Firestore material refresh unavailable; using stale runtime "
+                f"cache with {len(stale)} records: {type(exc).__name__}"
+            )
+            return stale
+        raise
     except Exception as exc:
         if stale is not None:
             print(
