@@ -41,6 +41,14 @@ jobs:
       - name: Check out repository
         uses: actions/checkout@v5
 
+      - name: Restore runtime Firestore cache
+        uses: actions/cache@v4
+        with:
+          path: .edusecure_runtime
+          key: edusecure-runtime-${{ github.run_id }}
+          restore-keys: |
+            edusecure-runtime-
+
       - name: Set up Python
         uses: actions/setup-python@v6
         with:
