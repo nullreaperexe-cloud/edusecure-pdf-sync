@@ -57,58 +57,14 @@ def firestore_request(
 ):
     """Firestore request with bounded retry for rate limits/transient errors."""
     global LAST_FIRESTORE_STATUS
-    retryable = {429, 500, 502, 503, 504}
-    last = None
-
-    for attempt in range(attempts):
-        response = requests.request(
-            method,
-            url,
-            params=params,
-            headers=firestore_headers(id_token),
-            json=json_body,
-            timeout=timeout,
-        )
-        last = response
-        LAST_FIRESTORE_STATUS = response.status_code
-
-        if response.status_code not in retryable:
-            return response
-
-        # A 429 is normally a project quota/rate-limit signal, not a request
-        # that benefits from being hammered five times for every announcement.
-        # Retry it once with a longer pause; callers can then defer the whole
-        # batch/cycle instead of multiplying the quota pressure.
-        max_for_status = min(attempts, 2) if response.status_code == 429 else attempts
-        if attempt + 1 >= max_for_status:
-            try:
-                message = clean((response.json().get("error") or {}).get("message"))
-            except Exception:
-                message = ""
-            print(
-                f"Firestore HTTP {response.status_code}; retry budget exhausted"
-                + (f": {message[:220]}" if message else "")
-            )
-            return response
-
-        if response.status_code == 429:
-            wait_seconds = 20.0
-        else:
-            wait_seconds = min(20, 1.5 * (2 ** attempt))
-        retry_after = response.headers.get("Retry-After")
-        try:
-            if retry_after:
-                wait_seconds = max(wait_seconds, float(retry_after))
-        except Exception:
-            pass
-
-        print(
-            f"Firestore HTTP {response.status_code}; "
-            f"retrying in {wait_seconds:.1f}s ({attempt + 1}/{max_for_status})"
-        )
-        time.sleep(wait_seconds)
-
-    return last
+    from reliable_http import request
+    # Deterministic document IDs make create/claim retries safe. Network
+    # exceptions now share the same bounded retry policy as transient HTTP errors.
+    LAST_FIRESTORE_STATUS = 0
+    response = request(method, url, params=params, headers=firestore_headers(id_token),
+                       json=json_body, timeout=timeout, attempts=attempts)
+    LAST_FIRESTORE_STATUS = response.status_code
+    return response
 
 
 def firestore_is_throttled() -> bool:
@@ -507,7 +463,7 @@ def useful_announcement(text: Any) -> bool:
     for pattern in intelligence.UI_JUNK_PATTERNS:
         stripped = re.sub(pattern, " ", stripped, flags=re.I)
 
-    stripped = re.sub(r"\s+", " ", stripped).strip(" -:|,.;")
+    stripped = re.sub(r"\s+", " ", stripped).strip(" -–—:|,.;")
     if len(stripped) < 8:
         return False
 
@@ -538,13 +494,13 @@ def clean_description(text: Any) -> str:
     value = re.sub(r"\bGood\s+(?:Morning|Afternoon|Evening)\b[:,\s-]*", " ", value, flags=re.I)
     value = re.sub(r"\b(?:Regards|Warm\s+Regards|Best\s+Regards)\b.*$", " ", value, flags=re.I)
     value = re.sub(r"\bPay\s*Now\b", " ", value, flags=re.I)
-    value = re.sub(r"\s+", " ", value).strip(" -:|,.;")
+    value = re.sub(r"\s+", " ", value).strip(" -–—:|,.;")
 
     if len(value) > 420:
         shortened = value[:420]
         if " " in shortened:
             shortened = shortened.rsplit(" ", 1)[0]
-        value = shortened.rstrip(" -:|,.;") + "…"
+        value = shortened.rstrip(" -–—:|,.;") + "…"
     return value
 
 
@@ -582,7 +538,7 @@ def prepare_announcement_ai_text(value: Any) -> str:
         flags=re.I,
     )
 
-    text = re.sub(r"\s+", " ", text).strip(" -:|,.;")
+    text = re.sub(r"\s+", " ", text).strip(" -–—:|,.;")
     return text
 
 

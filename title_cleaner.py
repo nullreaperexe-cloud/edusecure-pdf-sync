@@ -348,7 +348,7 @@ def _strip_common_junk(value: Any) -> str:
     text = re.sub(r"\s*[-–—]{2,}\s*", " - ", text)
     text = re.sub(r"(?:\s+-\s+){2,}", " - ", text)
     text = re.sub(r"\s+([,.;:])", r"\1", text)
-    text = re.sub(r"\s+", " ", text).strip(" -:|,.;")
+    text = re.sub(r"\s+", " ", text).strip(" -–—:|,.;")
     return text
 
 
@@ -361,7 +361,7 @@ def sanitize_title(value: Any, subject: Any = "") -> str:
     text = re.sub(r"\bQuestion\s*no\.?\s*(\d+)\b", r"Question No. \1", text, flags=re.I)
     text = re.sub(r"\bExercise\s*(\d+(?:\.\d+)*)\b", r"Exercise \1", text, flags=re.I)
     text = re.sub(r"\bcorrection\s+in\b", "Correction in", text, count=1, flags=re.I)
-    text = re.sub(r"\s+", " ", text).strip(" -:|,.;")
+    text = re.sub(r"\s+", " ", text).strip(" -–—:|,.;")
 
     # Observed EduSecure grammar failure: a truncated "Regarding ..." title can
     # end in an orphaned "From". Keep internal/valid uses such as
@@ -369,7 +369,7 @@ def sanitize_title(value: Any, subject: Any = "") -> str:
     text = re.sub(r"^(Regarding\s+.+?)\s+From$", r"\1", text, flags=re.I)
 
     if text:
-        return text[:160].rstrip(" -:|,.;")
+        return text[:160].rstrip(" -–—:|,.;")
 
     if ADMIN_WORD_RE.search(original):
         return "School Notice"
@@ -432,7 +432,9 @@ def finalize_material_fields(item: Dict[str, Any]) -> Dict[str, str]:
 def firebase_sign_in() -> str:
     if not FIREBASE_ADMIN_PASSWORD:
         raise RuntimeError("Missing FIREBASE_ADMIN_PASSWORD")
-    response = requests.post(
+    from reliable_http import request
+    response = request(
+        "POST",
         f"https://identitytoolkit.googleapis.com/v1/accounts:signInWithPassword?key={FIREBASE_API_KEY}",
         json={
             "email": FIREBASE_ADMIN_EMAIL,
@@ -470,43 +472,8 @@ def firestore_request_with_retry(
     **kwargs: Any,
 ) -> requests.Response:
     """Retry temporary Firestore throttling/server errors without changing cleanup logic."""
-    max_attempts = 8
-    response: Optional[requests.Response] = None
-
-    for attempt in range(1, max_attempts + 1):
-        response = requests.request(
-            method,
-            url,
-            headers=headers(token),
-            timeout=timeout,
-            **kwargs,
-        )
-        if response.status_code not in {429, 500, 502, 503, 504}:
-            return response
-
-        allowed_attempts = min(max_attempts, 2) if response.status_code == 429 else max_attempts
-        if attempt >= allowed_attempts:
-            break
-
-        retry_after = clean(response.headers.get("Retry-After"))
-        try:
-            if retry_after:
-                delay = max(20, min(60, int(float(retry_after))))
-            elif response.status_code == 429:
-                delay = 20
-            else:
-                delay = min(60, 2 ** attempt)
-        except (TypeError, ValueError):
-            delay = 20 if response.status_code == 429 else min(60, 2 ** attempt)
-
-        print(
-            f"Firestore HTTP {response.status_code}; "
-            f"retrying attempt {attempt + 1}/{allowed_attempts} after {delay}s..."
-        )
-        time.sleep(delay)
-
-    assert response is not None
-    return response
+    from reliable_http import request
+    return request(method, url, headers=headers(token), timeout=timeout, **kwargs)
 
 
 def list_materials(token: str) -> list[Dict[str, Any]]:
@@ -592,7 +559,7 @@ def main() -> int:
                 "Firestore quota is temporarily throttled; historical title cleanup "
                 "is deferred safely to the next scheduled run."
             )
-            return 0
+            return 75
         raise
 
     title_description_only = clean(os.environ.get("TITLE_DESCRIPTION_ONLY")).lower() in {

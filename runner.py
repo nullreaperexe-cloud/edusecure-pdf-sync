@@ -1,12 +1,14 @@
 from __future__ import annotations
 
 import json
+import hashlib
 import os
 import re
 import sys
 import time
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
+from zoneinfo import ZoneInfo
 from typing import Any, Dict, Optional, Set
 
 import requests
@@ -17,6 +19,8 @@ import title_cleaner as intelligence
 import openrouter_title as ai_title
 import announcement_processor as announcements
 import pdf_integrity as pdfguard
+from reliable_http import request as http_request, canonical_url
+from push_bridge import notify_published
 
 START_URL = legacy.START_URL
 FIREBASE_PROJECT_ID = "academyvault-5d1eb"
@@ -26,7 +30,7 @@ FIREBASE_ADMIN_PASSWORD = os.environ.get("FIREBASE_ADMIN_PASSWORD", "")
 EDUSECURE_USERNAME = os.environ.get("EDUSECURE_USERNAME", "")
 EDUSECURE_PASSWORD = os.environ.get("EDUSECURE_PASSWORD", "")
 MAX_UPLOADS = int(os.environ.get("MAX_UPLOADS", "25"))
-TODAY = date.today()
+TODAY = datetime.now(ZoneInfo("Asia/Kolkata")).date()
 REPORT_FILE = Path("sync_report.json")
 
 legacy.EDUSECURE_USERNAME = EDUSECURE_USERNAME
@@ -63,14 +67,13 @@ def parse_date_text(text: str) -> Optional[date]:
 def firebase_sign_in() -> str:
     url = f"https://identitytoolkit.googleapis.com/v1/accounts:signInWithPassword?key={FIREBASE_API_KEY}"
     payload = {"email": FIREBASE_ADMIN_EMAIL, "password": FIREBASE_ADMIN_PASSWORD, "returnSecureToken": True}
-    response = requests.post(url, json=payload, timeout=25)
+    response = http_request("POST", url, json=payload, timeout=25)
     if response.ok:
         token = response.json().get("idToken", "")
         if token:
-            print("Firebase admin authentication done ✅")
+            print("Firebase administrator authentication succeeded.")
             return token
-    print(f"Firebase Auth warning: HTTP {response.status_code}. Will try Firestore rules directly.")
-    return ""
+    raise RuntimeError(f"Firebase administrator authentication failed (HTTP {response.status_code}).")
 
 
 def firestore_headers(id_token: str = "") -> Dict[str, str]:
@@ -112,7 +115,7 @@ def list_firestore_materials(id_token: str) -> list[Dict[str, Any]]:
     docs: list[Dict[str, Any]] = []
     ai_subjects_fixed = 0
     while True:
-        response = requests.get(base, params=params, headers=firestore_headers(id_token), timeout=30)
+        response = http_request("GET", base, params=params, headers=firestore_headers(id_token), timeout=30)
         if response.status_code == 404:
             return []
         response.raise_for_status()
@@ -147,7 +150,7 @@ def existing_state(materials: list[Dict[str, Any]]) -> tuple[Set[str], Optional[
     latest: Optional[date] = None
     orders: list[int] = []
     for item in materials:
-        url = clean(item.get("pdf_url")).lower()
+        url = canonical_url(clean(item.get("pdf_url")))
         if url:
             urls.add(url)
         try:
@@ -193,16 +196,25 @@ def fs_fields(item: Dict[str, str], source_date: date, order: int) -> Dict[str, 
 
 def upload_firestore(item: Dict[str, str], source_date: date, order: int, id_token: str) -> bool:
     url = f"https://firestore.googleapis.com/v1/projects/{FIREBASE_PROJECT_ID}/databases/(default)/documents/study_materials"
-    response = requests.post(
-        url,
-        params={"key": FIREBASE_API_KEY},
+    # A timeout after a committed write must not create a second random document.
+    identity = canonical_url(clean(item.get("url") or item.get("pdf_url")))
+    document_id = "edusecure-" + hashlib.sha256(identity.encode("utf-8")).hexdigest()
+    response = http_request(
+        "POST", url,
+        params={"key": FIREBASE_API_KEY, "documentId": document_id},
         headers=firestore_headers(id_token),
         json={"fields": fs_fields(item, source_date, order)},
         timeout=30,
     )
     if response.ok:
-        print("✅ Firestore upload confirmed by server")
+        print("Firestore PDF publication confirmed by the server.")
         return True
+    if response.status_code == 409:
+        # Verify the stored identity; an existing unrelated document is a failure.
+        existing = http_request("GET", url + "/" + document_id, params={"key": FIREBASE_API_KEY}, headers=firestore_headers(id_token), timeout=30)
+        existing.raise_for_status()
+        saved = decode_value((existing.json().get("fields") or {}).get("pdf_url", {}))
+        return canonical_url(clean(saved)) == identity
     print(f"❌ Firestore upload failed: HTTP {response.status_code}")
     print(response.text[:1200])
     return False
@@ -327,17 +339,24 @@ def extract_attachment_url(driver, app_handle: str) -> Optional[str]:
 
 
 def save_report(report: Dict[str, Any]) -> None:
-    REPORT_FILE.write_text(json.dumps(report, indent=2, ensure_ascii=False, default=str), encoding="utf-8")
+    # Atomic replacement preserves the previous valid report if the process dies.
+    temporary = REPORT_FILE.with_suffix(".tmp")
+    temporary.write_text(json.dumps(report, indent=2, ensure_ascii=False, default=str), encoding="utf-8")
+    temporary.replace(REPORT_FILE)
 
 
 def main() -> int:
+    global TODAY
+    TODAY = datetime.now(ZoneInfo("Asia/Kolkata")).date()
+    save_report({"status": "starting", "started_at": datetime.now(timezone.utc).isoformat()})
     if not EDUSECURE_USERNAME or not EDUSECURE_PASSWORD:
         print("Missing EDUSECURE_USERNAME/EDUSECURE_PASSWORD GitHub secrets.")
+        save_report({"status": "failed", "failures": ["EduSecure credentials are missing"]})
         return 2
 
     print("=== STEP 1: READING EXISTING FIRESTORE DATA ===")
-    id_token = firebase_sign_in()
     try:
+        id_token = firebase_sign_in()
         materials = list_firestore_materials(id_token)
     except requests.HTTPError as exc:
         if getattr(exc.response, "status_code", None) == 429:
@@ -346,26 +365,17 @@ def main() -> int:
                 "Deferring this sync cycle safely instead of scanning without "
                 "duplicate state or hammering the quota."
             )
-            return 0
+            save_report({"status": "deferred", "failures": ["Firestore quota exceeded; the next cycle will retry"]})
+            return 75
         print(f"Could not read Firestore: {exc}")
+        save_report({"status": "failed", "failures": ["Firestore read failed: " + type(exc).__name__]})
         return 2
     except Exception as exc:
         print(f"Could not read Firestore: {exc}")
+        save_report({"status": "failed", "failures": ["Authentication or Firestore read failed: " + type(exc).__name__]})
         return 2
 
     existing_urls, latest_date, next_order = existing_state(materials)
-    existing_semantic_keys: Set[str] = set()
-    for material in materials:
-        if "edusecure" not in clean(material.get("source")).lower():
-            continue
-        key = intelligence.semantic_duplicate_key(
-            material.get("source_date"),
-            material.get("title"),
-            material.get("subject"),
-        )
-        if key:
-            existing_semantic_keys.add(key)
-
     safe_cutoff = TODAY - timedelta(days=1)
     # Revisit recent PDFs even when a newer card exists: exact URLs prevent duplicates.
     recovery_floor = TODAY - timedelta(days=int(os.environ.get('PDF_RECOVERY_DAYS', '21')))
@@ -375,7 +385,6 @@ def main() -> int:
     else:
         print(f"No readable existing PDF date; safe cutoff retained: {safe_cutoff.isoformat()}")
     print(f"Existing PDF URLs loaded: {len(existing_urls)}")
-    print(f"Existing semantic EduSecure duplicate keys loaded: {len(existing_semantic_keys)}")
 
     existing_announcement_ids: Set[str] = set()
     announcement_cutoff = TODAY - timedelta(days=int(os.environ.get("ANNOUNCEMENT_RECOVERY_DAYS", "7")))
@@ -399,12 +408,13 @@ def main() -> int:
         "failures": [],
     }
 
-    driver = legacy.make_driver()
+    driver = None
     processed: Set[str] = set()
     old_confirmations = 0
     bottom_confirmations = 0
 
     try:
+        driver = legacy.make_driver()
         print("Opening EduSecure Dashboard...")
         driver.get(START_URL)
         if not legacy.auto_login_edusecure(driver):
@@ -529,7 +539,7 @@ def main() -> int:
                     report["announcement_messages_ignored"] += 1
                 elif status == "retry":
                     report["announcement_ai_retries"] += 1
-                    print("Announcement postponed for next cycle because AI metadata was unavailable.")
+                    print("Announcement processing deferred; the next sync cycle will retry.")
                 else:
                     report["failures"].append(
                         f"Announcement upload failed for message dated {msg_date.isoformat() if msg_date else 'UNKNOWN'}"
@@ -552,7 +562,7 @@ def main() -> int:
                 legacy.return_dashboard_and_restore_v25(driver, app_handle, saved_position)
                 continue
 
-            normalized = clean(pdf_url).lower()
+            normalized = canonical_url(clean(pdf_url))
             if normalized in existing_urls:
                 report["duplicates_skipped"] += 1
                 print("Duplicate PDF URL -> skip")
@@ -605,16 +615,8 @@ def main() -> int:
                 "description": final_title,
             }
 
-            semantic_key = intelligence.semantic_duplicate_key(
-                msg_date,
-                item["title"],
-                item["subject"],
-            )
-            if semantic_key and semantic_key in existing_semantic_keys:
-                report["duplicates_skipped"] += 1
-                print("Semantic duplicate (date + cleaned title + subject) -> skip")
-                legacy.return_dashboard_and_restore_v25(driver, app_handle, saved_position)
-                continue
+            # Different URLs may be separate parts of the same lesson with the
+            # same title/date. Only an exact URL identity can suppress an upload.
 
             print("Uploading exact fields to Firestore after intelligence safety gate:")
             print(f"  Title: {item['title']}")
@@ -625,14 +627,17 @@ def main() -> int:
             if upload_firestore(item, msg_date, next_order, id_token):
                 report["uploaded"].append({**item, "source_date": msg_date.isoformat()})
                 existing_urls.add(normalized)
-                if semantic_key:
-                    existing_semantic_keys.add(semantic_key)
                 next_order -= 1
             else:
                 report["failures"].append(f"Firestore upload failed: {pdf_url}")
 
             legacy.return_dashboard_and_restore_v25(driver, app_handle, saved_position)
 
+        if report["uploaded"] or report["announcements_created"]:
+            report["push"] = notify_published(id_token)
+            if not report["push"]["ok"]:
+                report["failures"].append("Push wake-up was not confirmed; scheduled delivery remains enabled")
+        report["status"] = "failed" if report["failures"] else "deferred" if report["announcement_ai_retries"] else "completed"
         save_report(report)
         print("\n=== SYNC COMPLETE ===")
         print(f"Newer messages seen: {report['newer_messages_seen']}")
@@ -643,12 +648,19 @@ def main() -> int:
         print(f"New announcements uploaded: {len(report['announcements_created'])}")
         print(f"Announcement duplicates skipped: {report['announcement_duplicates_skipped']}")
         print(f"Announcement messages ignored: {report['announcement_messages_ignored']}")
-        print(f"Announcement AI retries postponed: {report['announcement_ai_retries']}")
+        print(f"Announcements deferred for retry: {report['announcement_ai_retries']}")
         print(f"Failures: {len(report['failures'])}")
-        return 1 if report["failures"] else 0
+        return 1 if report["failures"] else 75 if report["announcement_ai_retries"] else 0
+    except Exception as exc:
+        report["status"] = "failed"
+        report["failures"].append("Sync cycle interrupted: " + type(exc).__name__)
+        save_report(report)
+        print("Sync cycle interrupted; diagnostics were saved: " + type(exc).__name__)
+        return 1
     finally:
         try:
-            driver.quit()
+            if driver is not None:
+                driver.quit()
         except Exception:
             pass
 

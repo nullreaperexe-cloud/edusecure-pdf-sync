@@ -38,7 +38,7 @@ class SyncRepairTitleGrammarTests(unittest.TestCase):
             patch.object(repair.runner, "firebase_sign_in", return_value="token"),
             patch.object(repair.runner, "list_firestore_materials", side_effect=error),
         ):
-            self.assertEqual(repair.runner.main(), 0)
+            self.assertEqual(repair.runner.main(), 75)
 
 
     def test_existing_dangling_from_record_is_patched_narrowly(self):

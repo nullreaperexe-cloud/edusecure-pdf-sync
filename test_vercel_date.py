@@ -77,7 +77,7 @@ class FakeVercelDriver:
 
 class WebsiteDateTests(unittest.TestCase):
     def test_uses_vercel_not_discontinued_domain(self):
-        self.assertEqual(repair.WEBSITE_URL, "https://8apdf.vercel.app/")
+        self.assertEqual(repair.WEBSITE_URL, "https://the-8apdf.vercel.app/")
 
     def test_card_dates_not_circular_dates(self):
         text = "Circular dated October 2, 2026\nAdded Oct 1, 2026\nAdded Sep 30, 2026"
@@ -91,7 +91,7 @@ class WebsiteDateTests(unittest.TestCase):
         driver = FakeVercelDriver(onboarding=False)
         create_driver.return_value = driver
         value = repair.read_latest_date_from_website()
-        self.assertEqual(driver.url, "https://8apdf.vercel.app/")
+        self.assertEqual(driver.url, "https://the-8apdf.vercel.app/")
         self.assertEqual(value.isoformat(), "2026-10-01")
         self.assertTrue(driver.quit_called)
 
