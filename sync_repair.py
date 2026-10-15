@@ -28,7 +28,7 @@ from selenium.webdriver.common.by import By
 import runner
 
 
-WEBSITE_URL = os.environ.get("WEBSITE_URL", "https://the-8apdf.vercel.app/")
+WEBSITE_URL = os.environ.get("WEBSITE_URL", "https://8apdf.vercel.app/")
 DOWNLOAD_DIR = "/tmp/edusecure-downloads"
 BAD_URL_RE = re.compile(
     r"(?:/ParentApp/morelinks\.aspx(?:\?|$)|/images/loader\.gif(?:\?|$)|dashboard\.aspx(?:\?|$)|/login(?:\?|/|$))",
