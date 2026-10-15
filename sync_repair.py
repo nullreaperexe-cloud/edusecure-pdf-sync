@@ -9,6 +9,7 @@ this file directly.
 from __future__ import annotations
 
 import json
+import os
 import re
 import sys
 import time
@@ -27,7 +28,7 @@ from selenium.webdriver.common.by import By
 import runner
 
 
-WEBSITE_URL = "https://8apdf.vercel.app/"
+WEBSITE_URL = os.environ.get("WEBSITE_URL", "https://the-8apdf.vercel.app/")
 DOWNLOAD_DIR = "/tmp/edusecure-downloads"
 BAD_URL_RE = re.compile(
     r"(?:/ParentApp/morelinks\.aspx(?:\?|$)|/images/loader\.gif(?:\?|$)|dashboard\.aspx(?:\?|$)|/login(?:\?|/|$))",
@@ -67,7 +68,7 @@ ORIGINAL_SANITIZE_TITLE = runner.intelligence.sanitize_title
 
 def clean_title_grammar(value: Any) -> str:
     """Apply only grammar fixes that are proven safe from observed bad titles."""
-    text = clean(value)
+    text = clean(value).strip(" -–—:|,.;")
     if not text:
         return ""
 
@@ -75,7 +76,7 @@ def clean_title_grammar(value: Any) -> str:
     # Remove only that orphaned final preposition; valid internal uses such as
     # "Letter From Principal" must remain unchanged.
     text = re.sub(r"^(Regarding\s+.+?)\s+From$", r"\1", text, flags=re.I)
-    return text.strip(" -:|,.;")
+    return text.strip(" -–—:|,.;")
 
 
 def sanitize_title_with_grammar(value: Any, subject: Any = "") -> str:
@@ -124,10 +125,10 @@ def _load_cached_materials(*, allow_stale: bool = False) -> Optional[List[Dict[s
     return [item for item in materials if isinstance(item, dict)]
 
 
-def _save_cached_materials(materials: List[Dict[str, Any]]) -> None:
+def _save_cached_materials(materials: List[Dict[str, Any]], *, refreshed: bool = True) -> None:
     _write_runtime_json(
         MATERIAL_CACHE_FILE,
-        {"saved_at": time.time(), "materials": materials},
+        {"saved_at": time.time() if refreshed else _read_runtime_json(MATERIAL_CACHE_FILE).get("saved_at", 0), "materials": materials},
     )
 
 
@@ -142,10 +143,10 @@ def _load_cached_announcement_ids(*, allow_stale: bool = False) -> Optional[Set[
     return {clean(value) for value in ids if clean(value)}
 
 
-def _save_cached_announcement_ids(source_ids: Set[str]) -> None:
+def _save_cached_announcement_ids(source_ids: Set[str], *, refreshed: bool = True) -> None:
     _write_runtime_json(
         ANNOUNCEMENT_CACHE_FILE,
-        {"saved_at": time.time(), "complete_source_ids": sorted(source_ids)},
+        {"saved_at": time.time() if refreshed else _read_runtime_json(ANNOUNCEMENT_CACHE_FILE).get("saved_at", 0), "complete_source_ids": sorted(source_ids)},
     )
 
 
@@ -207,7 +208,7 @@ def normalize_duplicate_text(value: Any) -> str:
     """Stable text normalization used only for duplicate protection."""
     text = clean(value).lower()
     text = re.sub(r"\s+", " ", text)
-    return text.strip(" -:|,.;")
+    return text.strip(" -–—:|,.;")
 
 
 def source_date_key(value: Any) -> str:
@@ -779,8 +780,8 @@ def list_and_cleanup_materials(id_token: str) -> List[Dict[str, Any]]:
         kept.append(item)
 
     # Second pass: remove repeated EduSecure records already present on the site.
-    # A duplicate is confirmed by either the exact same URL or the same
-    # date+title+subject+description identity. Non-EduSecure records are untouched.
+    # Only exact URL identities confirm duplicates. Similar metadata can belong
+    # to distinct PDFs; never delete records solely because their titles match.
     deduped: List[Dict[str, Any]] = []
     seen_urls: Set[str] = set()
     seen_identities: Set[str] = set()
@@ -792,13 +793,11 @@ def list_and_cleanup_materials(id_token: str) -> List[Dict[str, Any]]:
             deduped.append(item)
             continue
 
-        url_key = normalize_duplicate_text(item.get("pdf_url"))
+        url_key = runner.canonical_url(clean(item.get("pdf_url")))
         identity_key = existing_material_duplicate_key(item)
         duplicate_reason = ""
         if url_key and url_key in seen_urls:
             duplicate_reason = "same URL"
-        elif identity_key and identity_key in seen_identities:
-            duplicate_reason = "same date/title/subject/description"
 
         if duplicate_reason:
             if firestore_delete_document(clean(item.get("_name")), id_token):
@@ -1366,11 +1365,11 @@ def upload_firestore_with_cache(
 
     materials = _load_cached_materials(allow_stale=True) or []
     pdf_url = clean(item.get("url") or item.get("pdf_url"))
-    normalized = pdf_url.lower()
+    normalized = runner.canonical_url(pdf_url)
     if normalized:
         materials = [
             row for row in materials
-            if clean(row.get("pdf_url")).lower() != normalized
+            if runner.canonical_url(clean(row.get("pdf_url"))) != normalized
         ]
     materials.append(
         {
@@ -1383,7 +1382,8 @@ def upload_firestore_with_cache(
             "order": order,
         }
     )
-    _save_cached_materials(materials)
+    # Incremental appends must not postpone the next authoritative refresh.
+    _save_cached_materials(materials, refreshed=False)
     return True
 
 
@@ -1441,7 +1441,7 @@ def process_no_attachment_message_cached(
 
     if status in {"created", "duplicate"}:
         cached_ids.add(source_id)
-        _save_cached_announcement_ids(cached_ids)
+        _save_cached_announcement_ids(cached_ids, refreshed=False)
         _clear_announcement_cooldown()
     elif status == "failed" and ANNOUNCEMENT_MODULE.firestore_is_throttled():
         _set_announcement_cooldown()
@@ -1484,7 +1484,10 @@ runner.legacy.is_pdf_url = valid_real_attachment_url
 def main() -> int:
     global WEBSITE_LATEST_DATE
 
-    WEBSITE_LATEST_DATE = read_latest_date_from_website()
+    # Firestore already contains authoritative dates. The optional visual audit
+    # starts a second Chrome process and can block on an unavailable website.
+    SEEN_MESSAGE_SIGNATURES.clear()
+    WEBSITE_LATEST_DATE = read_latest_date_from_website() if os.environ.get("CHECK_WEBSITE_DATE") == "1" else None
     if WEBSITE_LATEST_DATE is None:
         print("Website date unavailable; using authenticated Firestore plus the bounded PDF lookback.")
 

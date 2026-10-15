@@ -42,20 +42,24 @@ def fetch_pdf_text(pdf_url: str) -> Tuple[str, str]:
             headers={"User-Agent": "8aPDF-content-verifier/1.0"},
             stream=True,
         )
-        response.raise_for_status()
-        size = int(response.headers.get("Content-Length") or 0)
-        if size > MAX_PDF_BYTES:
-            return "", "too-large"
-        chunks = []
-        total = 0
-        for part in response.iter_content(chunk_size=65536):
-            if not part:
-                continue
-            total += len(part)
-            if total > MAX_PDF_BYTES:
+        try:
+            response.raise_for_status()
+            size = int(response.headers.get("Content-Length") or 0)
+            if size > MAX_PDF_BYTES:
                 return "", "too-large"
-            chunks.append(part)
-        data = b"".join(chunks)
+            chunks = []
+            total = 0
+            for part in response.iter_content(chunk_size=65536):
+                if not part:
+                    continue
+                total += len(part)
+                if total > MAX_PDF_BYTES:
+                    return "", "too-large"
+                chunks.append(part)
+            data = b"".join(chunks)
+        finally:
+            # Streaming responses retain sockets, especially on size-limit exits.
+            response.close()
         if not data.startswith(b"%PDF"):
             return "", "not-a-pdf"
         pdf = PdfReader(io.BytesIO(data), strict=False)

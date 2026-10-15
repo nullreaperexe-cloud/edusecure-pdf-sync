@@ -23,3 +23,5 @@ downloads/
 Thumbs.db
 .vscode/
 .idea/
+
+.edusecure_runtime_v2/
