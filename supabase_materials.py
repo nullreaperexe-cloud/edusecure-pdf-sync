@@ -6,6 +6,7 @@ use a server-side secret key. Never commit or print a Supabase secret key.
 from __future__ import annotations
 
 import os
+import re
 from datetime import date, datetime, timezone
 from typing import Any, Dict
 from urllib.parse import urlsplit
@@ -48,6 +49,44 @@ def headers(*, write: bool = False) -> Dict[str, str]:
     return result
 
 
+def _safe_supabase_error(response, operation: str) -> requests.HTTPError:
+    """Show the actual HTTP status and PostgREST error without logging secrets."""
+    code = ""
+    message = ""
+    try:
+        body = response.json()
+        if isinstance(body, dict):
+            code = str(body.get("code") or "").strip()[:45]
+            message = str(body.get("message") or body.get("error_description") or body.get("error") or "").strip()
+    except (ValueError, TypeError):
+        pass
+    # A gateway error may quote the submitted key. Never print it, even if
+    # GitHub's masking fails because of different escaping or quoting.
+    message = re.sub(r"(?i)sb_(?:secret|publishable)_[A-Za-z0-9_-]+", "[REDACTED]", message)
+    message = re.sub(r"(?i)(?:eyJ[A-Za-z0-9_-]+\\.){2}[A-Za-z0-9_-]+", "[REDACTED]", message)
+    message = message.replace("\\n", " ").replace("\\r", " ")[:210]
+    status = int(response.status_code)
+    guidance = {
+        400: "Check required table columns/order (pdf_url, title, subject, description, source_date, created_at).",
+        401: "The GitHub SUPABASE_SECRET_KEY may be incorrect, inactive, or from a different Supabase project.",
+        403: "Database table/schema permissions deny the configured key; check Supabase grants and RLS.",
+        404: "Supabase REST table study_materials was not found; confirm schema and project URL.",
+        429: "Supabase is rate limiting reads; try the next scheduled sync.",
+    }.get(status, "Check Supabase REST API and project logs.")
+    summary = f"Supabase {operation} failed: HTTP {status}"
+    if code:
+        summary += f", code {code}"
+    if message:
+        summary += f": {message}"
+    summary += f" — {guidance}"
+    return requests.HTTPError(summary, response=response)
+
+
+def _require_success(response, operation: str) -> None:
+    if not response.ok:
+        raise _safe_supabase_error(response, operation)
+
+
 def list_materials(_unused_token: str = "") -> list[Dict[str, Any]]:
     """Fully load the target table; never scan against incomplete duplicate state."""
     result: list[Dict[str, Any]] = []
@@ -56,11 +95,13 @@ def list_materials(_unused_token: str = "") -> list[Dict[str, Any]]:
             "GET",
             endpoint(),
             headers=headers(),
-            params={"select": "*", "order": "id.asc", "offset": offset, "limit": PAGE_SIZE},
+            # PDF URL is the document identity. Do not require an 'id' column:
+            # some existing Supabase study_materials tables only have pdf_url.
+            params={"select": "*", "order": "pdf_url.asc", "offset": offset, "limit": PAGE_SIZE},
             timeout=(7, 30),
         )
         try:
-            response.raise_for_status()
+            _require_success(response, "study_materials read")
             rows = response.json()
             if not isinstance(rows, list):
                 raise RuntimeError("Unexpected Supabase study_materials response (expected JSON array).")
@@ -73,11 +114,11 @@ def list_materials(_unused_token: str = "") -> list[Dict[str, Any]]:
     # Exact-boundary read verifies that a table of MAX_MATERIALS is not truncated.
     response = http_request(
         "GET", endpoint(), headers=headers(),
-        params={"select": "id", "offset": MAX_MATERIALS, "limit": 1},
+        params={"select": "pdf_url", "order": "pdf_url.asc", "offset": MAX_MATERIALS, "limit": 1},
         timeout=(7, 30),
     )
     try:
-        response.raise_for_status()
+        _require_success(response, "study_materials pagination")
         if response.json():
             raise RuntimeError("Supabase materials exceeded safe pagination bound; refusing partial duplicate state.")
     finally:
@@ -158,7 +199,7 @@ def upload_material(item: Dict[str, Any], source_date: date, order: int, _unused
                 return True
             print("Supabase POST returned success without matching PDF; verifying live record.")
         else:
-            print(f"Supabase PDF upload failed: HTTP {response.status_code} (check study_materials columns and write permissions).")
+            print(str(_safe_supabase_error(response, "study_materials insert")))
             if response.status_code not in (409, 408, 429, 500, 502, 503, 504):
                 return False
     finally:
