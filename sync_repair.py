@@ -1496,7 +1496,9 @@ def list_supabase_materials_safely(id_token: str) -> List[Dict[str, Any]]:
 runner.intelligence.sanitize_title = sanitize_title_with_grammar
 runner.list_firestore_materials = list_supabase_materials_safely
 runner.upload_firestore = upload_firestore_with_cache
-runner.announcements = _RunnerAnnouncementProxy(ANNOUNCEMENT_MODULE)
+# A fresh Supabase announcement inventory was already loaded by runner.main().
+# Use the direct client instead of the old Firestore-era TTL/cache proxy.
+runner.announcements = ANNOUNCEMENT_MODULE
 runner.extract_attachment_url = extract_attachment_url
 runner.legacy.make_title = make_message_title
 runner.legacy.detect_subject = detect_subject_smart
