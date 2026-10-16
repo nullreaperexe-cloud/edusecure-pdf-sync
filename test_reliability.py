@@ -55,13 +55,17 @@ class ReliabilityTests(unittest.TestCase):
         urls, _, _ = runner.existing_state([{'pdf_url': 'https://example.test/A.pdf'}])
         self.assertNotIn('https://example.test/a.pdf', urls)
 
-    @patch('runner.http_request')
-    def test_idempotent_create_and_conflict_check(self, request):
+    @patch('supabase_gateway.call')
+    def test_idempotent_create_and_conflict_check(self, gateway_call):
         item = {'title': 'Chapter 3 Notes', 'subject': 'Science', 'url': 'https://example.test/A.pdf'}
-        request.side_effect = [response(200), response(409), response(200, {'fields': {'pdf_url': {'stringValue': item['url']}}})]
-        self.assertTrue(runner.upload_firestore(item, date(2026, 10, 15), 1, 'token'))
-        self.assertTrue(runner.upload_firestore(item, date(2026, 10, 15), 1, 'token'))
-        self.assertEqual(request.call_args_list[0].kwargs['params']['documentId'], request.call_args_list[1].kwargs['params']['documentId'])
+        gateway_call.side_effect = [
+            {'ok': True, 'inserted': True, 'record': {'pdf_url': item['url']}},
+            {'ok': True, 'duplicate': True, 'record': {'pdf_url': item['url']}},
+        ]
+        self.assertTrue(runner.upload_firestore(item, date(2026, 10, 15), 1, ''))
+        self.assertTrue(runner.upload_firestore(item, date(2026, 10, 15), 1, ''))
+        self.assertEqual(gateway_call.call_args_list[0].kwargs['record']['id'],
+                         gateway_call.call_args_list[1].kwargs['record']['id'])
 
     def test_identical_metadata_does_not_delete_distinct_pdfs(self):
         a = {'source':'EduSecure GitHub Sync','title':'Chapter Notes','description':'Chapter Notes','subject':'Science','source_date':'2026-10-15','pdf_url':'https://example.test/A.pdf'}
@@ -94,10 +98,10 @@ class ReliabilityTests(unittest.TestCase):
                 sync_repair._save_cached_materials([{'title':'new'}],refreshed=False)
             self.assertEqual(sync_repair._read_runtime_json(sync_repair.MATERIAL_CACHE_FILE)['saved_at'],100)
 
-    def test_auth_failure_writes_report_without_starting_browser(self):
-        with tempfile.TemporaryDirectory() as temp, patch.object(runner,'REPORT_FILE',Path(temp)/'report.json'), patch.object(runner,'EDUSECURE_USERNAME','user'), patch.object(runner,'EDUSECURE_PASSWORD','pass'), patch.object(runner,'firebase_sign_in',side_effect=RuntimeError()), patch.object(runner.legacy,'make_driver') as driver:
+    def test_supabase_oidc_failure_writes_report_without_starting_browser(self):
+        with tempfile.TemporaryDirectory() as temp, patch.object(runner,'REPORT_FILE',Path(temp)/'report.json'), patch.object(runner,'EDUSECURE_USERNAME','user'), patch.object(runner,'EDUSECURE_PASSWORD','pass'), patch.object(runner.supabase_gateway,'health',side_effect=RuntimeError('OIDC unavailable')), patch.object(runner.legacy,'make_driver') as driver:
             self.assertEqual(runner.main(), 2)
-            self.assertIn('failed', runner.REPORT_FILE.read_text())
+            self.assertIn('OIDC unavailable', runner.REPORT_FILE.read_text())
             driver.assert_not_called()
 
 
