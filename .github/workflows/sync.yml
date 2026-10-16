@@ -72,6 +72,22 @@ jobs:
           python -m py_compile runner.py sync.py sync_repair.py supabase_gateway.py supabase_materials.py supabase_announcements.py title_cleaner.py openrouter_title.py announcement_processor.py announcement_backfill.py pdf_integrity.py reliable_http.py push_bridge.py
           python -m unittest discover -v
 
+      - name: Verify both Supabase tables through GitHub OIDC
+        env:
+          SUPABASE_URL: "https://xudhjwojgxblbsebkzso.supabase.co"
+          PYTHONUNBUFFERED: "1"
+        run: |
+          python - <<'PY'
+          import supabase_gateway as gateway
+          gateway.health()
+          for action, table in [("listMaterials", "study_materials"), ("listAnnouncements", "announcements")]:
+              result = gateway.call(action)
+              records = result.get("records")
+              if not isinstance(records, list):
+                  raise RuntimeError(f"Supabase {table} inventory missing")
+              print(f"Supabase {table}: {len(records)} accessible records.")
+          PY
+
       - name: Run one EduSecure sync cycle
         env:
           PYTHONUNBUFFERED: "1"
