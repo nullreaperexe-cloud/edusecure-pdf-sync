@@ -399,12 +399,20 @@ def main() -> int:
     try:
         materials = list_firestore_materials(id_token)
     except requests.HTTPError as exc:
-        if getattr(exc.response, "status_code", None) == 429:
+        status = getattr(exc.response, "status_code", None)
+        if status == 429:
             print(f"{MATERIAL_BACKEND} read throttled: deferring sync until remote duplicate state is available.")
             save_report({"status": "deferred", "failures": [f"{MATERIAL_BACKEND} quota exceeded; the next cycle will retry"]})
             return 75
-        print(f"Could not read PDF catalogue ({MATERIAL_BACKEND}): HTTP error")
-        save_report({"status": "failed", "failures": [f"{MATERIAL_BACKEND} PDF read failed: " + type(exc).__name__]})
+        # The Supabase helper sanitizes response details before building this
+        # exception, so the actionable PostgREST code can go into the report.
+        if MATERIAL_BACKEND == "supabase":
+            detail = str(exc)[:450]
+            print(f"Could not read PDF catalogue ({MATERIAL_BACKEND}): {detail}")
+            save_report({"status": "failed", "failures": [detail]})
+        else:
+            print(f"Could not read PDF catalogue ({MATERIAL_BACKEND}): HTTP {status or 'error'}")
+            save_report({"status": "failed", "failures": [f"{MATERIAL_BACKEND} PDF read failed: HTTP {status or 'error'}"]})
         return 2
     except Exception as exc:
         print(f"Could not read PDF catalogue ({MATERIAL_BACKEND}): {type(exc).__name__}")
