@@ -13,6 +13,8 @@ on:
       - "test_reliability.py"
       - "sync.py"
       - "sync_repair.py"
+      - "supabase_materials.py"
+      - "test_supabase_materials.py"
       - "title_cleaner.py"
       - "openrouter_title.py"
       - "announcement_processor.py"
@@ -43,7 +45,7 @@ jobs:
       - name: Check out repository
         uses: actions/checkout@v7
 
-      - name: Restore runtime Firestore cache
+      - name: Restore runtime sync cache
         uses: actions/cache@v6
         with:
           path: .edusecure_runtime_v2
@@ -63,12 +65,15 @@ jobs:
       - name: Validate automation code
         id: validate
         run: |
-          python -m py_compile runner.py sync.py sync_repair.py title_cleaner.py openrouter_title.py announcement_processor.py announcement_backfill.py pdf_integrity.py reliable_http.py push_bridge.py
+          python -m py_compile runner.py sync.py sync_repair.py supabase_materials.py title_cleaner.py openrouter_title.py announcement_processor.py announcement_backfill.py pdf_integrity.py reliable_http.py push_bridge.py
           python -m unittest discover -v
 
       - name: Run one EduSecure sync cycle
         env:
           PYTHONUNBUFFERED: "1"
+          MATERIAL_BACKEND: "supabase"
+          SUPABASE_URL: "https://rzhtesfikvykdnmrqwjs.supabase.co"
+          SUPABASE_SECRET_KEY: ${{ secrets.SUPABASE_SECRET_KEY }}
           EDUSECURE_USERNAME: ${{ secrets.EDUSECURE_USERNAME }}
           EDUSECURE_PASSWORD: ${{ secrets.EDUSECURE_PASSWORD }}
           FIREBASE_ADMIN_EMAIL: ${{ secrets.FIREBASE_ADMIN_EMAIL || vars.FIREBASE_ADMIN_EMAIL }}
@@ -78,6 +83,10 @@ jobs:
         run: |
           set +e
           echo "===== EduSecure check at $(date -u '+%Y-%m-%d %H:%M:%S UTC') ====="
+          if [ -z "$SUPABASE_SECRET_KEY" ]; then
+            echo "::error::Missing SUPABASE_SECRET_KEY. Add it under Settings > Secrets and variables > Actions."
+            exit 2
+          fi
 
           timeout --signal=TERM --kill-after=15s 18m python sync_repair.py
           EXIT_CODE=$?
