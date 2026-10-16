@@ -1,0 +1,171 @@
+"""Read and publish EduSecure PDF metadata to the 8aPDF Supabase table.
+
+The browser uses a publishable key for SELECT; this GitHub Actions worker must
+use a server-side secret key. Never commit or print a Supabase secret key.
+"""
+from __future__ import annotations
+
+import os
+from datetime import date, datetime, timezone
+from typing import Any, Dict
+from urllib.parse import urlsplit
+
+import requests
+
+from reliable_http import canonical_url, request as http_request
+
+DEFAULT_SUPABASE_URL = "https://rzhtesfikvykdnmrqwjs.supabase.co"
+TABLE = "study_materials"
+PAGE_SIZE = 500
+MAX_MATERIALS = 100_000
+
+
+def endpoint() -> str:
+    root = (os.environ.get("SUPABASE_URL") or DEFAULT_SUPABASE_URL).strip().rstrip("/")
+    parsed = urlsplit(root)
+    if parsed.scheme != "https" or not parsed.hostname or parsed.path not in ("", "/"):
+        raise RuntimeError("SUPABASE_URL must be an HTTPS project origin.")
+    return root + "/rest/v1/" + TABLE
+
+
+def secret_key() -> str:
+    key = (os.environ.get("SUPABASE_SECRET_KEY") or os.environ.get("SUPABASE_SERVICE_ROLE_KEY") or "").strip()
+    if not key:
+        raise RuntimeError("Missing SUPABASE_SECRET_KEY GitHub Actions secret (private server-side key required).")
+    if key.startswith(("sb_publishable_", "anon_")):
+        raise RuntimeError("A Supabase publishable/anon key is not safe for automation writes; set SUPABASE_SECRET_KEY.")
+    return key
+
+
+def headers(*, write: bool = False) -> Dict[str, str]:
+    key = secret_key()
+    result = {"apikey": key, "Accept": "application/json"}
+    if write:
+        result.update({"Content-Type": "application/json", "Prefer": "return=representation"})
+    # JWT-style legacy service_role keys also require Authorization for PostgREST.
+    if key.count(".") == 2:
+        result["Authorization"] = "Bearer " + key
+    return result
+
+
+def list_materials(_unused_token: str = "") -> list[Dict[str, Any]]:
+    """Fully load the target table; never scan against incomplete duplicate state."""
+    result: list[Dict[str, Any]] = []
+    for offset in range(0, MAX_MATERIALS, PAGE_SIZE):
+        response = http_request(
+            "GET",
+            endpoint(),
+            headers=headers(),
+            params={"select": "*", "order": "id.asc", "offset": offset, "limit": PAGE_SIZE},
+            timeout=(7, 30),
+        )
+        try:
+            response.raise_for_status()
+            rows = response.json()
+            if not isinstance(rows, list):
+                raise RuntimeError("Unexpected Supabase study_materials response (expected JSON array).")
+            result.extend(row for row in rows if isinstance(row, dict))
+            if len(rows) < PAGE_SIZE:
+                print(f"Supabase study_materials loaded: {len(result)} records.")
+                return result
+        finally:
+            response.close()
+    # Exact-boundary read verifies that a table of MAX_MATERIALS is not truncated.
+    response = http_request(
+        "GET", endpoint(), headers=headers(),
+        params={"select": "id", "offset": MAX_MATERIALS, "limit": 1},
+        timeout=(7, 30),
+    )
+    try:
+        response.raise_for_status()
+        if response.json():
+            raise RuntimeError("Supabase materials exceeded safe pagination bound; refusing partial duplicate state.")
+    finally:
+        response.close()
+    return result
+
+
+def is_already_published(url: str) -> bool:
+    """Check exact canonical URL after an uncertain POST result or timeout."""
+    identity = canonical_url(url)
+    if not identity:
+        raise ValueError("Cannot verify an empty PDF URL")
+    # Full scan remains correct even when PostgREST filter escaping, duplicate
+    # URLs or case-sensitive PDF paths would make a targeted eq filter unsafe.
+    return any(canonical_url(str(row.get("pdf_url") or "")) == identity for row in list_materials())
+
+
+def build_material(item: Dict[str, Any], source_date: date, order: int) -> Dict[str, Any]:
+    # Same final sanitization gate that protected the previous Firestore writer.
+    import title_cleaner as intelligence
+
+    safe = intelligence.finalize_material_fields(item)
+    pdf_url = str(safe.get("url") or item.get("url") or item.get("pdf_url") or "").strip()
+    parsed = urlsplit(pdf_url)
+    if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+        raise ValueError("Refusing to publish a non-HTTP document URL")
+    title = str(safe.get("title") or "").strip()
+    if not title:
+        raise ValueError("Refusing to publish a PDF with an empty title")
+    utc_midnight = datetime(source_date.year, source_date.month, source_date.day, tzinfo=timezone.utc)
+    return {
+        "title": title,
+        "subject": intelligence.normalize_subject(safe.get("subject")) or "Circular",
+        "description": str(safe.get("description") or title).strip(),
+        "pdf_url": pdf_url,
+        "source": "EduSecure GitHub Sync",
+        "source_date": utc_midnight.isoformat().replace("+00:00", "Z"),
+        "order": int(order),
+        "created_at": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+    }
+
+
+def upload_material(item: Dict[str, Any], source_date: date, order: int, _unused_token: str = "") -> bool:
+    """Publish a PDF only if its exact URL is absent; verify ambiguous writes.
+
+    Concurrency is also serialized in the GitHub Actions workflow. For
+    cross-system race protection, a UNIQUE index on pdf_url is recommended.
+    """
+    payload = build_material(item, source_date, order)
+    url = payload["pdf_url"]
+    # Always use the live remote table before POST, not a possibly stale cache.
+    if is_already_published(url):
+        print("PDF already exists in Supabase; no duplicate inserted.")
+        return True
+
+    try:
+        # No blind automatic retry of POST: the first request may have committed.
+        response = requests.post(
+            endpoint(),
+            headers=headers(write=True),
+            params={"select": "*"},
+            json=payload,
+            timeout=(7, 30),
+        )
+    except (requests.Timeout, requests.ConnectionError) as exc:
+        print(f"Supabase write response uncertain ({type(exc).__name__}); checking committed PDF URL.")
+        try:
+            return is_already_published(url)
+        except Exception as verify_error:
+            print(f"Supabase verification unavailable: {type(verify_error).__name__}")
+            return False
+
+    try:
+        if response.ok:
+            rows = response.json()
+            if isinstance(rows, list) and rows and canonical_url(str(rows[0].get("pdf_url") or "")) == canonical_url(url):
+                print("Supabase PDF publication confirmed by REST response.")
+                return True
+            print("Supabase POST returned success without matching PDF; verifying live record.")
+        else:
+            print(f"Supabase PDF upload failed: HTTP {response.status_code} (check study_materials columns and write permissions).")
+            if response.status_code not in (409, 408, 429, 500, 502, 503, 504):
+                return False
+    finally:
+        response.close()
+
+    try:
+        return is_already_published(url)
+    except Exception as exc:
+        print(f"Supabase follow-up verification failed: {type(exc).__name__}")
+        return False
