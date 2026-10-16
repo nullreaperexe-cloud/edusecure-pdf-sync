@@ -21,12 +21,15 @@ import announcement_processor as announcements
 import pdf_integrity as pdfguard
 from reliable_http import request as http_request, canonical_url
 from push_bridge import notify_published
+import supabase_materials as supabase_store
 
 START_URL = legacy.START_URL
 FIREBASE_PROJECT_ID = "academyvault-5d1eb"
 FIREBASE_API_KEY = "AIzaSyATxKki6gkNWic_CnoGbZnOZjAUj1lbKGI"
 FIREBASE_ADMIN_EMAIL = os.environ.get("FIREBASE_ADMIN_EMAIL") or "nullreaper.exe@gmail.com"
 FIREBASE_ADMIN_PASSWORD = os.environ.get("FIREBASE_ADMIN_PASSWORD", "")
+# The active 8aPDF PDF catalogue is Supabase. Firestore remains optional for announcements.
+MATERIAL_BACKEND = os.environ.get("MATERIAL_BACKEND", "supabase").strip().lower()
 EDUSECURE_USERNAME = os.environ.get("EDUSECURE_USERNAME", "")
 EDUSECURE_PASSWORD = os.environ.get("EDUSECURE_PASSWORD", "")
 MAX_UPLOADS = int(os.environ.get("MAX_UPLOADS", "25"))
@@ -110,6 +113,8 @@ def patch_subject(document_name: str, subject: str, id_token: str) -> bool:
 
 
 def list_firestore_materials(id_token: str) -> list[Dict[str, Any]]:
+    if MATERIAL_BACKEND == "supabase":
+        return supabase_store.list_materials(id_token)
     base = f"https://firestore.googleapis.com/v1/projects/{FIREBASE_PROJECT_ID}/databases/(default)/documents/study_materials"
     params: Dict[str, Any] = {"pageSize": 1000, "key": FIREBASE_API_KEY}
     docs: list[Dict[str, Any]] = []
@@ -195,6 +200,8 @@ def fs_fields(item: Dict[str, str], source_date: date, order: int) -> Dict[str, 
 
 
 def upload_firestore(item: Dict[str, str], source_date: date, order: int, id_token: str) -> bool:
+    if MATERIAL_BACKEND == "supabase":
+        return supabase_store.upload_material(item, source_date, order, id_token)
     url = f"https://firestore.googleapis.com/v1/projects/{FIREBASE_PROJECT_ID}/databases/(default)/documents/study_materials"
     # A timeout after a committed write must not create a second random document.
     identity = canonical_url(clean(item.get("url") or item.get("pdf_url")))
@@ -354,25 +361,54 @@ def main() -> int:
         save_report({"status": "failed", "failures": ["EduSecure credentials are missing"]})
         return 2
 
-    print("=== STEP 1: READING EXISTING FIRESTORE DATA ===")
+    if MATERIAL_BACKEND not in {"supabase", "firestore"}:
+        print("Invalid MATERIAL_BACKEND; expected supabase or firestore.")
+        save_report({"status": "failed", "failures": ["Invalid MATERIAL_BACKEND"]})
+        return 2
+
+    # Refuse to scan/attempt uploads when the Supabase writer is not configured.
+    # The public sb_publishable_ key can read under RLS but is NOT a write secret.
+    if MATERIAL_BACKEND == "supabase":
+        try:
+            supabase_store.endpoint()
+            supabase_store.secret_key()
+        except RuntimeError as exc:
+            print("Supabase PDF publication is not configured: " + str(exc))
+            save_report({"status": "failed", "failures": ["Supabase writer secret or URL missing"]})
+            return 2
+
+    id_token = ""
+    if MATERIAL_BACKEND == "firestore":
+        try:
+            id_token = firebase_sign_in()
+        except Exception as exc:
+            print(f"Firestore administrator login failed: {type(exc).__name__}")
+            save_report({"status": "failed", "failures": ["Firebase login failed"]})
+            return 2
+    elif FIREBASE_ADMIN_PASSWORD:
+        # Firebase is still used by the *separate* teacher-announcement pipeline.
+        # A Firebase auth error must not block PDF syncing to Supabase.
+        try:
+            id_token = firebase_sign_in()
+        except Exception as exc:
+            print(f"Optional Firestore announcement login failed: {type(exc).__name__}. PDF sync can continue.")
+    else:
+        print("No Firebase admin password: PDF syncing proceeds; Firestore announcements/push will be skipped.")
+
+    print(f"=== STEP 1: READING EXISTING {MATERIAL_BACKEND.upper()} PDF DATA ===")
     try:
-        id_token = firebase_sign_in()
         materials = list_firestore_materials(id_token)
     except requests.HTTPError as exc:
         if getattr(exc.response, "status_code", None) == 429:
-            print(
-                "Firestore read quota is temporarily throttled. "
-                "Deferring this sync cycle safely instead of scanning without "
-                "duplicate state or hammering the quota."
-            )
-            save_report({"status": "deferred", "failures": ["Firestore quota exceeded; the next cycle will retry"]})
+            print(f"{MATERIAL_BACKEND} read throttled: deferring sync until remote duplicate state is available.")
+            save_report({"status": "deferred", "failures": [f"{MATERIAL_BACKEND} quota exceeded; the next cycle will retry"]})
             return 75
-        print(f"Could not read Firestore: {exc}")
-        save_report({"status": "failed", "failures": ["Firestore read failed: " + type(exc).__name__]})
+        print(f"Could not read PDF catalogue ({MATERIAL_BACKEND}): HTTP error")
+        save_report({"status": "failed", "failures": [f"{MATERIAL_BACKEND} PDF read failed: " + type(exc).__name__]})
         return 2
     except Exception as exc:
-        print(f"Could not read Firestore: {exc}")
-        save_report({"status": "failed", "failures": ["Authentication or Firestore read failed: " + type(exc).__name__]})
+        print(f"Could not read PDF catalogue ({MATERIAL_BACKEND}): {type(exc).__name__}")
+        save_report({"status": "failed", "failures": [f"{MATERIAL_BACKEND} PDF read failed: " + type(exc).__name__]})
         return 2
 
     existing_urls, latest_date, next_order = existing_state(materials)
@@ -519,6 +555,15 @@ def main() -> int:
                 else:
                     print("No PDF attachment -> routing message to Announcements")
 
+                if not id_token:
+                    # Announcements have not been migrated from Firestore.
+                    # Without Firebase authentication, do not attempt writes or
+                    # misclassify them as published Supabase PDF records.
+                    print("Announcement skipped: Firebase administrator session unavailable.")
+                    report["announcement_ai_retries"] += 1
+                    legacy.return_dashboard_and_restore_v25(driver, app_handle, saved_position)
+                    continue
+
                 status, announcement_item = announcements.process_no_attachment_message(
                     message_text=message_text,
                     detail_text=detail_text,
@@ -618,7 +663,7 @@ def main() -> int:
             # Different URLs may be separate parts of the same lesson with the
             # same title/date. Only an exact URL identity can suppress an upload.
 
-            print("Uploading exact fields to Firestore after intelligence safety gate:")
+            print(f"Uploading exact fields to {MATERIAL_BACKEND} after intelligence safety gate:")
             print(f"  Title: {item['title']}")
             print(f"  Subject: {item['subject']}")
             print(f"  Description: {item['description']}")
@@ -629,14 +674,18 @@ def main() -> int:
                 existing_urls.add(normalized)
                 next_order -= 1
             else:
-                report["failures"].append(f"Firestore upload failed: {pdf_url}")
+                report["failures"].append(f"{MATERIAL_BACKEND} upload failed: {pdf_url}")
 
             legacy.return_dashboard_and_restore_v25(driver, app_handle, saved_position)
 
         if report["uploaded"] or report["announcements_created"]:
-            report["push"] = notify_published(id_token)
-            if not report["push"]["ok"]:
-                report["failures"].append("Push wake-up was not confirmed; scheduled delivery remains enabled")
+            if id_token:
+                report["push"] = notify_published(id_token)
+                if not report["push"]["ok"]:
+                    report["failures"].append("Push wake-up was not confirmed; scheduled delivery remains enabled")
+            else:
+                report["push"] = {"ok": False, "skipped": True, "reason": "Firebase-only push worker requires an existing admin session"}
+                print("Push wake-up skipped: no Firebase session; PDFs are still stored in Supabase.")
         report["status"] = "failed" if report["failures"] else "deferred" if report["announcement_ai_retries"] else "completed"
         save_report(report)
         print("\n=== SYNC COMPLETE ===")
