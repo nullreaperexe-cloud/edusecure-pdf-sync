@@ -13,6 +13,11 @@ on:
       - "test_reliability.py"
       - "sync.py"
       - "sync_repair.py"
+      - "supabase_gateway.py"
+      - "supabase_materials.py"
+      - "supabase_announcements.py"
+      - "test_supabase_materials.py"
+      - "test_supabase_announcements.py"
       - "title_cleaner.py"
       - "openrouter_title.py"
       - "announcement_processor.py"
@@ -29,6 +34,7 @@ on:
 
 permissions:
   contents: read
+  id-token: write
 
 concurrency:
   # Only one active browser sync; a later scheduled run can safely retry errors.
@@ -43,7 +49,7 @@ jobs:
       - name: Check out repository
         uses: actions/checkout@v7
 
-      - name: Restore runtime Firestore cache
+      - name: Restore Supabase duplicate-protection cache
         uses: actions/cache@v6
         with:
           path: .edusecure_runtime_v2
@@ -63,7 +69,7 @@ jobs:
       - name: Validate automation code
         id: validate
         run: |
-          python -m py_compile runner.py sync.py sync_repair.py title_cleaner.py openrouter_title.py announcement_processor.py announcement_backfill.py pdf_integrity.py reliable_http.py push_bridge.py
+          python -m py_compile runner.py sync.py sync_repair.py supabase_gateway.py supabase_materials.py supabase_announcements.py title_cleaner.py openrouter_title.py announcement_processor.py announcement_backfill.py pdf_integrity.py reliable_http.py push_bridge.py
           python -m unittest discover -v
 
       - name: Run one EduSecure sync cycle
@@ -71,9 +77,9 @@ jobs:
           PYTHONUNBUFFERED: "1"
           EDUSECURE_USERNAME: ${{ secrets.EDUSECURE_USERNAME }}
           EDUSECURE_PASSWORD: ${{ secrets.EDUSECURE_PASSWORD }}
-          FIREBASE_ADMIN_EMAIL: ${{ secrets.FIREBASE_ADMIN_EMAIL || vars.FIREBASE_ADMIN_EMAIL }}
-          FIREBASE_ADMIN_PASSWORD: ${{ secrets.FIREBASE_ADMIN_PASSWORD }}
+          SUPABASE_URL: "https://xudhjwojgxblbsebkzso.supabase.co"
           ANNOUNCEMENT_RECOVERY_DAYS: "7"
+          CHECK_WEBSITE_DATE: "0"
           OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
         run: |
           set +e
