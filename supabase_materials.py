@@ -63,7 +63,7 @@ def _safe_supabase_error(response, operation: str) -> requests.HTTPError:
     # A gateway error may quote the submitted key. Never print it, even if
     # GitHub's masking fails because of different escaping or quoting.
     message = re.sub(r"(?i)sb_(?:secret|publishable)_[A-Za-z0-9_-]+", "[REDACTED]", message)
-    message = re.sub(r"(?i)(?:eyJ[A-Za-z0-9_-]+\\.){2}[A-Za-z0-9_-]+", "[REDACTED]", message)
+    message = re.sub(r"(?i)(?:eyJ[A-Za-z0-9_-]+\.){2}[A-Za-z0-9_-]+", "[REDACTED]", message)
     message = message.replace("\\n", " ").replace("\\r", " ")[:210]
     status = int(response.status_code)
     guidance = {
