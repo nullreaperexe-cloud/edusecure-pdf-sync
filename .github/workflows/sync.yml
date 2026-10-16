@@ -23,17 +23,16 @@ on:
       - "requirements.txt"
       - ".github/workflows/sync.yml"
   schedule:
-    # Backup watchdog only. The active worker checks every 5 minutes itself.
-    - cron: "17 * * * *"
+    # Independent 5-minute watchdog, offset from the busiest minute of each hour.
+    # Does not depend on the previous job succeeding or dispatching another run.
+    - cron: "2-59/5 * * * *"
 
 permissions:
   contents: read
-  actions: write
 
 concurrency:
-  # v2 uses one bounded sync cycle per run. A distinct group lets this repaired
-  # worker deploy immediately even if an older 5.5-hour worker is still alive.
-  group: edusecure-5m-worker-v2
+  # Only one active browser sync; a later scheduled run can safely retry errors.
+  group: edusecure-scheduled-sync-v3
   cancel-in-progress: false
 
 jobs:
@@ -78,21 +77,12 @@ jobs:
           OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
         run: |
           set +e
-          CYCLE_START=$(date +%s)
           echo "===== EduSecure check at $(date -u '+%Y-%m-%d %H:%M:%S UTC') ====="
 
           timeout --signal=TERM --kill-after=15s 18m python sync_repair.py
           EXIT_CODE=$?
           if [ "$EXIT_CODE" -eq 124 ] || [ "$EXIT_CODE" -eq 137 ]; then
             python -c 'import json,pathlib; p=pathlib.Path("sync_report.json"); d=json.loads(p.read_text()) if p.exists() else {}; d.update(status="timed_out",failures=d.get("failures",[])+["The sync cycle exceeded its time limit; the next cycle will retry"]); p.write_text(json.dumps(d,indent=2))'
-          fi
-
-          NOW=$(date +%s)
-          ELAPSED=$((NOW - CYCLE_START))
-          SLEEP_FOR=$((300 - ELAPSED))
-          if [ "$SLEEP_FOR" -gt 0 ]; then
-            echo "Cycle finished early; waiting ${SLEEP_FOR}s to preserve a minimum 5-minute cadence."
-            sleep "$SLEEP_FOR"
           fi
 
           if [ "$EXIT_CODE" -ne 0 ]; then
@@ -122,19 +112,3 @@ jobs:
           if-no-files-found: ignore
           retention-days: 7
 
-      - name: Queue next 5-minute worker
-        # Validation must pass, but a transient live-sync failure still hands off
-        # so the next bounded cycle can self-heal instead of stopping automation.
-        if: always() && !cancelled() && steps.validate.outcome == 'success'
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          echo "Queueing the next EduSecure 5-minute worker..."
-          curl --fail-with-body --retry 3 --retry-all-errors --retry-delay 3 --max-time 30 -L \
-            -X POST \
-            -H "Accept: application/vnd.github+json" \
-            -H "Authorization: Bearer ${GH_TOKEN}" \
-            -H "X-GitHub-Api-Version: 2022-11-28" \
-            https://api.github.com/repos/${{ github.repository }}/actions/workflows/sync.yml/dispatches \
-            -d '{"ref":"main"}'
-          echo "Next worker queued successfully."
