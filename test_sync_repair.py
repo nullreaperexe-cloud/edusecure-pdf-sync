@@ -74,5 +74,48 @@ class SyncRepairTitleGrammarTests(unittest.TestCase):
         )
 
 
+
+class AttachmentRecoveryTests(unittest.TestCase):
+    def test_embedded_pdf_recovers_when_school_has_no_attachment_anchor(self):
+        url = "https://edusecure.org/StudentInfo/Homework/example.pdf"
+        with (
+            patch.object(repair, "exact_attachment_anchors", return_value=[]),
+            patch.object(repair.runner.legacy, "extract_pdf_from_current_page", return_value=url),
+            patch.object(repair, "ORIGINAL_ATTACHMENT_EXTRACT") as fallback,
+        ):
+            self.assertEqual(repair.extract_attachment_url(Mock(), "main"), url)
+        fallback.assert_not_called()
+
+    def test_aspnet_attachment_button_fallback(self):
+        url = "https://edusecure.org/StudentInfo/Homework/download.pdf"
+        with (
+            patch.object(repair, "exact_attachment_anchors", return_value=[]),
+            patch.object(repair.runner.legacy, "extract_pdf_from_current_page", return_value=None),
+            patch.object(repair, "ORIGINAL_ATTACHMENT_EXTRACT", return_value=url),
+        ):
+            self.assertEqual(repair.extract_attachment_url(Mock(), "main"), url)
+
+    def test_same_message_can_contain_different_pdf_urls(self):
+        first = "https://edusecure.org/StudentInfo/Homework/chapter1.pdf"
+        second = "https://edusecure.org/StudentInfo/Homework/chapter2.pdf"
+        with (
+            patch.object(repair, "exact_attachment_anchors", return_value=[{"id": "attachment", "href": first}]),
+            patch.object(repair, "right_click_open_link_in_new_tab", side_effect=[first, second]),
+        ):
+            repair.SEEN_MESSAGE_SIGNATURES.add("same description")
+            self.assertEqual(repair.extract_attachment_url(Mock(), "main"), first)
+            self.assertEqual(repair.extract_attachment_url(Mock(), "main"), second)
+            repair.SEEN_MESSAGE_SIGNATURES.clear()
+
+    def test_rejects_non_document_portal_fallback_url(self):
+        with (
+            patch.object(repair, "exact_attachment_anchors", return_value=[]),
+            patch.object(repair.runner.legacy, "extract_pdf_from_current_page", return_value=None),
+            patch.object(repair, "ORIGINAL_ATTACHMENT_EXTRACT",
+                         return_value="https://edusecure.org/ManavMangal88/ParentApp/Dashboard.aspx"),
+        ):
+            self.assertIsNone(repair.extract_attachment_url(Mock(), "main"))
+
+
 if __name__ == "__main__":
     unittest.main()
