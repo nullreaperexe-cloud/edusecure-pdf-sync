@@ -5,7 +5,8 @@ import sys
 import time
 from typing import Any, Dict, List, Set
 
-import announcement_processor as announcements
+import supabase_announcements as announcements
+import supabase_gateway
 import openrouter_title as ai_title
 import runner
 import sync_repair as repair
@@ -33,21 +34,19 @@ def main() -> int:
         print("Missing EduSecure credentials.")
         return 2
 
-    id_token = runner.firebase_sign_in()
-    if not id_token:
-        print("Firebase admin sign-in failed; historical repair will not run.")
-        return 2
+    id_token = ""  # Short-lived GitHub OIDC handles all Supabase authentication.
+    supabase_gateway.health()
 
     try:
         complete_source_ids = announcements.list_complete_source_ids(id_token)
         print(
             f"Loaded {len(complete_source_ids)} already-complete announcement IDs "
-            "with one Firestore collection read."
+            "with one authenticated Supabase inventory read."
         )
     except Exception as exc:
         if getattr(getattr(exc, "response", None), "status_code", None) == 429:
             print(
-                "Firestore quota is currently throttled. Recovery is deferred "
+                "Supabase rate limit is active. Recovery is deferred "
                 "without hammering the same quota; the next scheduled run will retry."
             )
             return 0
@@ -59,7 +58,7 @@ def main() -> int:
 
     print("=== EDUSecure ANNOUNCEMENT RECOVERY ===")
     print(f"Recovery window: {RECENT_DAYS or 'full historical'} days")
-    print("No announcements collection listing.")
+    print("Complete published announcement inventory is available from Supabase.")
     print("Dates/order are repaired directly from EduSecure message dates.")
     print(f"AI batch size: {AI_BATCH_SIZE}")
     print("ONLY real .pdf attachments stay PDF-only; every other EduSecure message becomes an Announcement.")
@@ -178,9 +177,8 @@ def main() -> int:
                 )
                 continue
 
-            # Avoid one Firestore GET per historical message. PATCH the
-            # deterministic document directly; upload_announcement() falls back
-            # to POST on 404 and refreshes an incomplete existing record in place.
+            # The Edge function publishes by deterministic ID, safely skipping
+            # already-published announcements in Supabase.
             existing_document_name = announcements.announcement_document_name(source_id)
 
             provisional = announcements.build_fallback_announcement(
@@ -202,7 +200,7 @@ def main() -> int:
             ):
                 if announcements.firestore_is_throttled():
                     print(
-                        "Firestore quota throttled during recovery. Stopping this "
+                        "Supabase rate limited during recovery. Stopping this "
                         "run immediately so the next scheduled run can resume cleanly."
                     )
                     runner.legacy.return_dashboard_and_restore_v25(
@@ -314,7 +312,7 @@ def main() -> int:
                 else:
                     if announcements.firestore_is_throttled():
                         print(
-                            "Firestore quota throttled during AI refinement. "
+                            "Supabase rate limited during AI refinement. "
                             "Deferring remaining refinements to the next run."
                         )
                         return 0
