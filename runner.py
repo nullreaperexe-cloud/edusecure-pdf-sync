@@ -367,6 +367,9 @@ def main() -> int:
     try:
         supabase_gateway.health()
         materials = list_firestore_materials(id_token)
+        # Verify BOTH migrated tables before launching Selenium.  This is a
+        # fresh published-ID inventory, never a historical Firestore cache.
+        existing_announcement_ids: Set[str] = announcements.list_complete_source_ids(id_token)
     except Exception as exc:
         # Fail closed instead of writing PDFs without duplicate state.
         detail = str(exc)
@@ -385,7 +388,6 @@ def main() -> int:
         print(f"No readable existing PDF date; safe cutoff retained: {safe_cutoff.isoformat()}")
     print(f"Existing PDF URLs loaded: {len(existing_urls)}")
 
-    existing_announcement_ids: Set[str] = set()
     announcement_cutoff = TODAY - timedelta(days=int(os.environ.get("ANNOUNCEMENT_RECOVERY_DAYS", "7")))
     print(
         "Announcement recovery scan uses deterministic Supabase document IDs; "
