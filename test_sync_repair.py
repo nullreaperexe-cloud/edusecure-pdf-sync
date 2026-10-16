@@ -28,17 +28,27 @@ class SyncRepairTitleGrammarTests(unittest.TestCase):
         )
 
 
-    def test_live_sync_defers_safely_on_firestore_429(self):
-        response = Mock()
-        response.status_code = 429
-        error = requests.HTTPError("quota", response=response)
+    def test_live_sync_does_not_start_browser_if_supabase_read_fails(self):
         with (
             patch.object(repair.runner, "EDUSECURE_USERNAME", "user"),
             patch.object(repair.runner, "EDUSECURE_PASSWORD", "pass"),
-            patch.object(repair.runner, "firebase_sign_in", return_value="token"),
-            patch.object(repair.runner, "list_firestore_materials", side_effect=error),
+            patch.object(repair.runner.supabase_gateway, "health"),
+            patch.object(repair.runner, "list_firestore_materials", side_effect=RuntimeError("Supabase read blocked")),
+            patch.object(repair.runner.legacy, "make_driver") as browser,
+            patch.object(repair.runner, "save_report"),
         ):
-            self.assertEqual(repair.runner.main(), 75)
+            self.assertEqual(repair.runner.main(), 2)
+            browser.assert_not_called()
+
+    def test_supabase_inventory_never_uses_firestore_mutations(self):
+        records=[{"id":"legacy-1","pdf_url":"https://example.org/one.pdf","title":"One"}]
+        with (patch.object(repair, "ORIGINAL_LIST", return_value=records),
+              patch.object(repair, "_save_cached_materials"),
+              patch.object(repair, "firestore_delete_document") as delete,
+              patch.object(repair, "firestore_update_subject") as update):
+            self.assertEqual(repair.list_supabase_materials_safely(""),records)
+            delete.assert_not_called()
+            update.assert_not_called()
 
 
     def test_existing_dangling_from_record_is_patched_narrowly(self):
