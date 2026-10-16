@@ -33,6 +33,7 @@ class SyncRepairTitleGrammarTests(unittest.TestCase):
         response.status_code = 429
         error = requests.HTTPError("quota", response=response)
         with (
+            patch.object(repair.runner, "MATERIAL_BACKEND", "firestore"),
             patch.object(repair.runner, "EDUSECURE_USERNAME", "user"),
             patch.object(repair.runner, "EDUSECURE_PASSWORD", "pass"),
             patch.object(repair.runner, "firebase_sign_in", return_value="token"),
