@@ -47,7 +47,7 @@ SEEN_MESSAGE_SIGNATURES: Set[str] = set()
 # v2 namespace intentionally discards the first experimental cache, which was
 # created while unit tests still shared the announcement module monkey-patch.
 RUNTIME_CACHE_DIR = Path(".edusecure_runtime_v2")
-MATERIAL_CACHE_FILE = RUNTIME_CACHE_DIR / "materials.json"
+MATERIAL_CACHE_FILE = RUNTIME_CACHE_DIR / ("materials-supabase.json" if runner.MATERIAL_BACKEND == "supabase" else "materials.json")
 ANNOUNCEMENT_CACHE_FILE = RUNTIME_CACHE_DIR / "announcements.json"
 MATERIAL_COOLDOWN_FILE = RUNTIME_CACHE_DIR / "material_cooldown.json"
 ANNOUNCEMENT_COOLDOWN_FILE = RUNTIME_CACHE_DIR / "announcement_cooldown.json"
@@ -828,6 +828,29 @@ def list_and_cleanup_materials(id_token: str) -> List[Dict[str, Any]]:
     return deduped
 
 
+def list_and_review_supabase_materials(id_token: str) -> List[Dict[str, Any]]:
+    """Use only fresh Supabase records for duplicate protection.
+
+    Firestore's old cache, mutation helpers and quota cooldown are deliberately
+    bypassed. Never delete, patch or silently use stale records from the new
+    table during a scrape: an incomplete catalogue could create duplicates.
+    """
+    materials = ORIGINAL_LIST(id_token)
+    unique_urls: Set[str] = set()
+    duplicates = 0
+    for item in materials:
+        identity = runner.canonical_url(clean(item.get("pdf_url")))
+        if identity:
+            if identity in unique_urls:
+                duplicates += 1
+            unique_urls.add(identity)
+    if duplicates:
+        print(f"Supabase contains {duplicates} duplicate PDF URL records. Leaving database records untouched.")
+    _save_cached_materials(materials)
+    print(f"Fresh Supabase material catalogue verified: {len(materials)} records, {len(unique_urls)} URL identities.")
+    return materials
+
+
 # ---------------------------------------------------------------------------
 # Exact Attachment-link repair
 # ---------------------------------------------------------------------------
@@ -1347,7 +1370,7 @@ def read_latest_date_from_website() -> Optional[date]:
 
 
 def existing_state_from_website(materials: List[Dict[str, Any]]):
-    """Firestore is authoritative for known links; website date is advisory.
+    """The active database is authoritative for known links; website date is advisory.
 
     A recent PDF may be missing even when a newer PDF exists, so runner.main
     applies its bounded lookback and URL-based de-duplication independently.
@@ -1477,7 +1500,7 @@ class _RunnerAnnouncementProxy:
 # Monkey-patching the shared title_cleaner sanitizer is intentional: it protects
 # OpenRouter output, semantic duplicate keys and the final Firestore safety gate.
 runner.intelligence.sanitize_title = sanitize_title_with_grammar
-runner.list_firestore_materials = list_and_cleanup_materials
+runner.list_firestore_materials = list_and_review_supabase_materials if runner.MATERIAL_BACKEND == "supabase" else list_and_cleanup_materials
 runner.upload_firestore = upload_firestore_with_cache
 runner.announcements = _RunnerAnnouncementProxy(ANNOUNCEMENT_MODULE)
 runner.extract_attachment_url = extract_attachment_url
@@ -1490,12 +1513,12 @@ runner.legacy.is_pdf_url = valid_real_attachment_url
 def main() -> int:
     global WEBSITE_LATEST_DATE
 
-    # Firestore already contains authoritative dates. The optional visual audit
+    # The configured PDF database contains authoritative dates. The optional visual audit
     # starts a second Chrome process and can block on an unavailable website.
     SEEN_MESSAGE_SIGNATURES.clear()
     WEBSITE_LATEST_DATE = read_latest_date_from_website() if os.environ.get("CHECK_WEBSITE_DATE") == "1" else None
     if WEBSITE_LATEST_DATE is None:
-        print("Website date unavailable; using authenticated Firestore plus the bounded PDF lookback.")
+        print(f"Website date unavailable; using {runner.MATERIAL_BACKEND} and the bounded PDF lookback.")
 
     runner.existing_state = existing_state_from_website
     return runner.main()
