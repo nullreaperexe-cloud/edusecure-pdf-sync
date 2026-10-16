@@ -17,7 +17,9 @@ from selenium.common.exceptions import WebDriverException
 import sync as legacy
 import title_cleaner as intelligence
 import openrouter_title as ai_title
-import announcement_processor as announcements
+import supabase_announcements as announcements
+import supabase_materials as supabase_store
+import supabase_gateway
 import pdf_integrity as pdfguard
 from reliable_http import request as http_request, canonical_url
 from push_bridge import notify_published
@@ -165,40 +167,10 @@ def patch_subject(document_name: str, subject: str, id_token: str) -> bool:
     return response.ok
 
 
-def list_firestore_materials(id_token: str) -> list[Dict[str, Any]]:
-    base = f"https://firestore.googleapis.com/v1/projects/{FIREBASE_PROJECT_ID}/databases/(default)/documents/study_materials"
-    params: Dict[str, Any] = {"pageSize": 1000, "key": FIREBASE_API_KEY}
-    docs: list[Dict[str, Any]] = []
-    ai_subjects_fixed = 0
-    while True:
-        response = http_request("GET", base, params=params, headers=firestore_headers(id_token), timeout=30)
-        if response.status_code == 404:
-            return []
-        response.raise_for_status()
-        body = response.json()
-        for raw in body.get("documents", []):
-            fields = {k: decode_value(v) for k, v in (raw.get("fields") or {}).items()}
-            fields["_name"] = raw.get("name", "")
+def list_firestore_materials(id_token: str = "") -> list[Dict[str, Any]]:
+    """Compatibility name: the active source is new 8aPDF Supabase."""
+    return supabase_store.list_materials()
 
-            old_subject = clean(fields.get("subject"))
-            canonical_subject = normalize_subject_name(old_subject)
-            if canonical_subject == "Computer" and old_subject.lower() in {"artificial intelligence", "ai"}:
-                if patch_subject(fields["_name"], "Computer", id_token):
-                    fields["subject"] = "Computer"
-                    ai_subjects_fixed += 1
-                    print(f"Corrected existing subject: {old_subject} -> Computer")
-                else:
-                    print(f"Could not correct existing AI subject for {fields['_name']}")
-
-            docs.append(fields)
-        token = body.get("nextPageToken")
-        if not token:
-            break
-        params["pageToken"] = token
-
-    if ai_subjects_fixed:
-        print(f"Existing Artificial Intelligence subjects merged into Computer: {ai_subjects_fixed}")
-    return docs
 
 
 def existing_state(materials: list[Dict[str, Any]]) -> tuple[Set[str], Optional[date], int]:
@@ -250,30 +222,10 @@ def fs_fields(item: Dict[str, str], source_date: date, order: int) -> Dict[str, 
     }
 
 
-def upload_firestore(item: Dict[str, str], source_date: date, order: int, id_token: str) -> bool:
-    url = f"https://firestore.googleapis.com/v1/projects/{FIREBASE_PROJECT_ID}/databases/(default)/documents/study_materials"
-    # A timeout after a committed write must not create a second random document.
-    identity = canonical_url(clean(item.get("url") or item.get("pdf_url")))
-    document_id = "edusecure-" + hashlib.sha256(identity.encode("utf-8")).hexdigest()
-    response = http_request(
-        "POST", url,
-        params={"key": FIREBASE_API_KEY, "documentId": document_id},
-        headers=firestore_headers(id_token),
-        json={"fields": fs_fields(item, source_date, order)},
-        timeout=30,
-    )
-    if response.ok:
-        print("Firestore PDF publication confirmed by the server.")
-        return True
-    if response.status_code == 409:
-        # Verify the stored identity; an existing unrelated document is a failure.
-        existing = http_request("GET", url + "/" + document_id, params={"key": FIREBASE_API_KEY}, headers=firestore_headers(id_token), timeout=30)
-        existing.raise_for_status()
-        saved = decode_value((existing.json().get("fields") or {}).get("pdf_url", {}))
-        return canonical_url(clean(saved)) == identity
-    print(f"❌ Firestore upload failed: HTTP {response.status_code}")
-    print(response.text[:1200])
-    return False
+def upload_firestore(item: Dict[str, str], source_date: date, order: int, id_token: str = "") -> bool:
+    """Compatibility name: uploads directly to 8aPDF Supabase (never Firestore)."""
+    return supabase_store.upload_material(item, source_date, order)
+
 
 
 def resolve_target_url(driver, target: Dict[str, str]) -> Optional[str]:
@@ -410,30 +362,16 @@ def main() -> int:
         save_report({"status": "failed", "failures": ["EduSecure credentials are missing"]})
         return 2
 
-    print("=== STEP 1: READING EXISTING FIRESTORE DATA ===")
+    print("=== STEP 1: READING EXISTING 8aPDF SUPABASE DATA ===")
+    id_token = ""  # Firebase administrator login is no longer used.
     try:
-        id_token = firebase_sign_in()
+        supabase_gateway.health()
         materials = list_firestore_materials(id_token)
-    except requests.HTTPError as exc:
-        if getattr(exc.response, "status_code", None) == 429:
-            print(
-                "Firestore read quota is temporarily throttled. "
-                "Deferring this sync cycle safely instead of scanning without "
-                "duplicate state or hammering the quota."
-            )
-            save_report({"status": "deferred", "failures": ["Firestore quota exceeded; the next cycle will retry"]})
-            return 75
-        print(f"Could not read Firestore: {exc}")
-        save_report({"status": "failed", "failures": ["Firestore read failed: " + type(exc).__name__]})
-        return 2
     except Exception as exc:
-        print(f"Could not read Firestore: {exc}")
-        # The typed authentication exception is already redacted and safe for
-        # GitHub's run summary; expose the actual Firebase error code there.
-        detail = str(exc) if isinstance(exc, FirebaseAuthenticationError) else (
-            "Authentication or Firestore read failed: " + type(exc).__name__
-        )
-        save_report({"status": "failed", "failures": [detail]})
+        # Fail closed instead of writing PDFs without duplicate state.
+        detail = str(exc)
+        print("Supabase inventory read failed: " + detail[:300])
+        save_report({"status": "failed", "failures": [detail[:300]]})
         return 2
 
     existing_urls, latest_date, next_order = existing_state(materials)
@@ -450,7 +388,7 @@ def main() -> int:
     existing_announcement_ids: Set[str] = set()
     announcement_cutoff = TODAY - timedelta(days=int(os.environ.get("ANNOUNCEMENT_RECOVERY_DAYS", "7")))
     print(
-        "Announcement recovery scan uses deterministic Firestore document IDs; "
+        "Announcement recovery scan uses deterministic Supabase document IDs; "
         f"messages from {announcement_cutoff.isoformat()} onward remain eligible."
     )
 
@@ -679,7 +617,7 @@ def main() -> int:
             # Different URLs may be separate parts of the same lesson with the
             # same title/date. Only an exact URL identity can suppress an upload.
 
-            print("Uploading exact fields to Firestore after intelligence safety gate:")
+            print("Uploading exact fields to Supabase after intelligence safety gate:")
             print(f"  Title: {item['title']}")
             print(f"  Subject: {item['subject']}")
             print(f"  Description: {item['description']}")
@@ -690,14 +628,14 @@ def main() -> int:
                 existing_urls.add(normalized)
                 next_order -= 1
             else:
-                report["failures"].append(f"Firestore upload failed: {pdf_url}")
+                report["failures"].append(f"Supabase upload failed: {pdf_url}")
 
             legacy.return_dashboard_and_restore_v25(driver, app_handle, saved_position)
 
         if report["uploaded"] or report["announcements_created"]:
-            report["push"] = notify_published(id_token)
-            if not report["push"]["ok"]:
-                report["failures"].append("Push wake-up was not confirmed; scheduled delivery remains enabled")
+            # The former push wake-up needed a Firebase Auth ID token. Supabase
+            # publication itself must never fail due to a retired Firebase hook.
+            report["push"] = {"ok": False, "skipped": True, "reason": "Firebase push wake-up disabled after Supabase migration"}
         report["status"] = "failed" if report["failures"] else "deferred" if report["announcement_ai_retries"] else "completed"
         save_report(report)
         print("\n=== SYNC COMPLETE ===")
