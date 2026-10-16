@@ -1,68 +1,56 @@
-# EduSecure PDF Sync → 8aPDF Supabase
+# EduSecure → 8aPDF Supabase Sync
 
-The active GitHub Actions worker runs `sync_repair.py` every ~5 minutes (GitHub schedules are best-effort). It reads EduSecure ParentApp attachments, verifies PDF links, cleans titles and subjects, skips existing exact PDF URLs, and publishes **new PDF metadata directly to the Supabase `study_materials` table** that the 8aPDF website now reads.
+This repository syncs **new EduSecure school PDFs and teacher announcements** to the new, independent 8aPDF Supabase project:
+- Project URL: https://xudhjwojgxblbsebkzso.supabase.co
+- Tables: `public.study_materials` and `public.announcements`
+- GitHub workflow: `.github/workflows/sync.yml`; entrypoint: `sync_repair.py`
+- Schedule: approximately every five minutes (GitHub scheduling is best-effort).
+- **Firebase/Firestore credentials are NOT used by the active sync.**
 
-## Required GitHub Actions secrets
+## Secretless GitHub → Supabase authentication
 
-Go to **Repo → Settings → Secrets and variables → Actions → New repository secret** and add:
+The GitHub workflow grants `id-token: write` and requests a short-lived GitHub Actions OIDC token for audience `8apdf-supabase-sync`. It sends the signed token over HTTPS to the deployed Supabase Edge Function `edusecure-sync` (with Supabase's `verify_jwt` gateway setting disabled **because the function independently validates the GitHub JWT signature**).
 
-- `EDUSECURE_USERNAME` — EduSecure login.
-- `EDUSECURE_PASSWORD` — EduSecure password.
-- **`SUPABASE_SECRET_KEY` — private server-side Supabase secret key** (`sb_secret_...`) or legacy service-role key, from the *same* Supabase project used by 8aPDF.
-- `FIREBASE_ADMIN_PASSWORD` — optional for PDFs, but still necessary for the **existing Firestore-based teacher announcements and push wake-up**. `FIREBASE_ADMIN_EMAIL` can override the existing email.
-- `OPENROUTER_API_KEY` — optional; clean deterministic titles are used if AI is unavailable.
+The Edge Function verifies issuer, audience, signature (GitHub JWKS), repository, branch, owner, event and expiration **before** accessing the database with its server-side Supabase credentials. It never shares those credentials with GitHub or the public browser. All writes are gated on this authorization; **never** make public/anon insert policies to fix authorization.
 
-**Never use the public `sb_publishable_...` key as `SUPABASE_SECRET_KEY`.** Public keys are designed for untrusted browser reads under RLS. Never paste a server-side secret in chat, code, issues or logs. The worker refuses to run without the server-side secret instead of falling back to the wrong PDF database.
+The active sync requires only these GitHub secrets:
+- `EDUSECURE_USERNAME`: actual EduSecure school login.
+- `EDUSECURE_PASSWORD`: EduSecure school password.
+- `OPENROUTER_API_KEY` (optional): AI-generated title refinement; deterministic safe fallback if unavailable.
 
-The workflow sets `MATERIAL_BACKEND=supabase` and `SUPABASE_URL=https://rzhtesfikvykdnmrqwjs.supabase.co`. The Python code also defaults to Supabase. `MATERIAL_BACKEND=firestore` remains available only as a **manual legacy recovery option**; do not enable it for normal 8aPDF publication.
+**No `SUPABASE_SECRET_KEY`, `FIREBASE_ADMIN_PASSWORD` or Firebase user account is necessary for this sync.** Do not paste any private keys into GitHub source files or logs.
 
-## Expected Supabase table columns
+## PDF and announcement behavior
 
-The existing `public.study_materials` table must allow the automation to insert the following fields:
+New PDF metadata is published through the verified Edge function to `study_materials`, preserving the original source PDF URL, sanitized title, subject and school message date. Exact canonical URL matching prevents duplicate PDF records (case-sensitive path/query); the table additionally has a unique `pdf_url` index. Existing rows are never deleted or automatically overwritten by the live sync.
 
-| Field | Recommended PostgreSQL type | Purpose |
-|---|---|---|
-| `title` | `text` | Checked PDF heading |
-| `subject` | `text` | Normalized school subject |
-| `description` | `text` | Safe short description |
-| `pdf_url` | `text` | Original source PDF URL (exact case and query) |
-| `source` | `text` | `EduSecure GitHub Sync` |
-| `source_date` | `timestamptz` | School message date |
-| `order` | `integer` | Existing newest-first ordering |
-| `created_at` | `timestamptz` | Automated UTC insertion time |
+Non-PDF school messages, including messages with non-PDF attachments, are published to `announcements` through the same authenticated function. Announcement IDs are deterministic from the original message and date; records already published are not duplicated. The original normalized announcement data is retained in the `raw` JSON column for website compatibility.
 
-The table should also have an `id` primary key with a working default (UUID or integer). If the table has additional required columns without defaults, reconcile its schema before running. The worker deliberately does **not** auto-migrate or delete any database schema or historical PDFs.
+**Historical Firestore data is not automatically copied by this scheduled job.** Any missing historical documents require a separate source export. PDFs are kept at their original school-hosted URLs, not copied into Supabase Storage.
 
-For best concurrency safety, apply a **unique constraint/index to `pdf_url` after removing any existing URL duplicates**. The worker checks live URLs before inserting, rechecks after uncertain network responses, and GitHub Actions serializes sync jobs, but a database unique index is the strongest protection against other concurrent writers.
+## Reliability
 
-## Public website access and security
+- `python -m unittest discover -v` — run all offline regression tests.
+- `python -m py_compile runner.py sync_repair.py supabase_gateway.py supabase_materials.py supabase_announcements.py` — check syntax.
+- Workflow tests run before it attempts to log in to EduSecure.
+- Active sync fails closed if the OIDC identity or live Supabase inventory cannot be verified. It does not use stale Firestore caches for duplicate decisions.
+- A message is only marked uploaded after the Edge function confirms the insert or preexisting record.
+- GitHub Actions serializes overlapping scheduled runs; operations are idempotent for safe retries.
+- All diagnostics are recorded in `sync_report.json` and attached to the run.
 
-The 8aPDF browser uses a **publishable** key to read PDFs. Its Supabase Row Level Security (RLS) must allow the intended public `SELECT` rows; a successful private GitHub write does not guarantee the website can read. **Do not create an anonymous/public INSERT, UPDATE or DELETE policy to make automation work.** Admin writes should only use the private worker key. Teacher announcements remain in Firestore until a separate Supabase announcements table/migration is configured.
+The old Firestore cleanup functions remain in older migration/legacy helper code for backwards-compatible tests; **they are never dispatched from the scheduled Supabase sync**. Do not run those legacy cleanup helpers against the new database.
 
-Only PDF metadata and the school-provided URL are stored; the worker does not copy school documents into Supabase Storage. Historical Firestore PDFs are **not** migrated automatically. For existing website records to appear in the new Supabase library, they must already be in `study_materials` or be migrated separately.
+## Verify the automation
 
-## Reliability and testing
+1. Open [EduSecure PDF Sync workflow](https://github.com/nullreaperexe-cloud/edusecure-pdf-sync/actions/workflows/sync.yml).
+2. Use **Run workflow → main → Run workflow**, or inspect the latest scheduled/push run.
+3. Confirm **Validate automation code** passes and the next step shows:
+   `Supabase 8aPDF backend authorized through GitHub Actions OIDC.`
+4. Look for both `Verified Supabase study_materials inventory` and `Verified Supabase announcement IDs`, followed by new PDF/announcement confirmations whenever eligible source messages exist.
+5. Check [8aPDF Supabase](https://supabase.com/dashboard/project/xudhjwojgxblbsebkzso/editor). The website should read the two tables using its public publishable key with RLS-enforced read access.
 
-Run `python -m unittest discover -v` and `python -m py_compile runner.py sync_repair.py supabase_materials.py`. The workflow runs tests automatically before opening the browser.
+A code commit or passing local unit tests **does not alone prove** a live EduSecure login or published records. An actual successful GitHub Actions run is required to confirm the end-to-end path.
 
-- Entire Supabase catalogue is paginated and validated; the sync **fails closed** on read errors rather than creating duplicates from a partial snapshot.
-- New PDFs are published using exact case-sensitive URLs and verified server responses.
-- A timed-out POST is **not blindly replayed**; the worker rereads Supabase to determine whether it committed.
-- Existing Firestore cleanup/mutation routines are bypassed for PDF records under the active Supabase backend.
-- Firestore teacher announcement processing remains separate and optional for PDF publication; Firebase login errors no longer prevent Supabase PDF work.
-- Error summaries and screenshots are saved to `sync_report.json` and GitHub Actions artifacts.
-- The old browser-based website date check (`CHECK_WEBSITE_DATE=1`) is optional; the current maintenance homepage will not display PDF dates.
+## Known separate feature
 
-Push notifications still use an existing worker that expects Firebase identity; PDF publication **does not imply that Supabase-sourced PDF push notifications have been migrated**. Confirm notification delivery separately.
-
-## Check a live run
-
-1. Open [EduSecure PDF Sync Actions](https://github.com/nullreaperexe-cloud/edusecure-pdf-sync/actions/workflows/sync.yml).
-2. After creating `SUPABASE_SECRET_KEY`, click **Run workflow → main → Run workflow**.
-3. Inspect **Validate automation code** and **Run one EduSecure sync cycle**.
-4. Confirm the summary includes `Supabase study_materials loaded:` and `Supabase PDF publication confirmed` when new PDFs exist.
-5. Check [8aPDF materials JSON](https://the-8apdf.vercel.app/api/materials) and your Supabase Table Editor. PDFs must appear in **Supabase**, not the old Firestore collection.
-
-If you see HTTP 401/403, check the Supabase secret and project; HTTP 400/404/422 usually indicates REST/table/schema mismatch. If no new PDFs are eligible, a green run may not insert anything.
-
-**Important:** GitHub commits are not proof of a successful end-to-end sync. A real run with correctly configured secrets, table schema, and school login is required for confirmation.
+Older school push notification wake-up depended on Firebase Authentication. It has been disabled in the main sync rather than allowing that retired dependency to break PDF/announcement publication. Push delivery requires a separate Supabase-compatible implementation and is not guaranteed by this migration.
