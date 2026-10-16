@@ -41,6 +41,7 @@ class SupabaseMaterialsTests(unittest.TestCase):
         with patch.object(store, "http_request", return_value=response(data=rows)) as get:
             self.assertEqual(store.list_materials(), rows)
         self.assertEqual(get.call_args.kwargs["params"]["select"], "*")
+        self.assertEqual(get.call_args.kwargs["params"]["order"], "pdf_url.asc")
         self.assertEqual(get.call_args.kwargs["params"]["offset"], 0)
         self.assertEqual(get.call_args.kwargs["headers"]["apikey"], "sb_secret_test_only")
 
@@ -57,6 +58,26 @@ class SupabaseMaterialsTests(unittest.TestCase):
         with patch.object(store, "http_request", return_value=response(403)):
             with self.assertRaises(requests.HTTPError):
                 store.list_materials()
+
+    def test_http_error_reports_actionable_status_without_leaking_keys(self):
+        failure = response(401, {
+            "code": "PGRST301",
+            "message": "Invalid API key sb_secret_test_only",
+        })
+        with patch.object(store, "http_request", return_value=failure):
+            with self.assertRaises(requests.HTTPError) as caught:
+                store.list_materials()
+        description = str(caught.exception)
+        self.assertIn("HTTP 401", description)
+        self.assertIn("PGRST301", description)
+        self.assertIn("SUPABASE_SECRET_KEY", description)
+        self.assertNotIn("sb_secret_test_only", description)
+
+    def test_missing_id_column_does_not_break_sort(self):
+        with patch.object(store, "http_request", return_value=response(data=[])) as request:
+            self.assertEqual(store.list_materials(), [])
+        self.assertEqual(request.call_args.kwargs["params"]["order"], "pdf_url.asc")
+        self.assertNotIn("id.asc", str(request.call_args.kwargs["params"]))
 
     def test_duplicate_url_is_not_posted(self):
         payload = {"pdf_url": "https://example.org/Caps.PDF", "title": "Chapter"}
