@@ -81,12 +81,38 @@ jobs:
           python - <<'PY'
           import supabase_gateway as gateway
           gateway.health()
+          lists = {}
           for action, table in [("listMaterials", "study_materials"), ("listAnnouncements", "announcements")]:
               result = gateway.call(action)
               records = result.get("records")
               if not isinstance(records, list):
                   raise RuntimeError(f"Supabase {table} inventory missing")
+              lists[table] = records
               print(f"Supabase {table}: {len(records)} accessible records.")
+
+          # Existing identities exercise BOTH protected write paths with no new
+          # records or changes. Missing/empty tables skip the duplicate probe.
+          materials = lists["study_materials"]
+          if materials:
+              known = next((r for r in materials if r.get("id") and r.get("title") and r.get("pdf_url")), None)
+              if known:
+                  confirmed = gateway.call("insertMaterial", record={
+                      "id": known["id"], "title": known["title"], "pdf_url": known["pdf_url"]
+                  })
+                  if not confirmed.get("duplicate"):
+                      raise RuntimeError("Supabase PDF duplicate write probe failed")
+                  print("Supabase PDF write path: authenticated and safely deduplicated.")
+
+          announcements = lists["announcements"]
+          if announcements:
+              known = next((r for r in announcements if r.get("id") and r.get("title") and r.get("published") is True), None)
+              if known:
+                  confirmed = gateway.call("publishAnnouncement", record={
+                      "id": known["id"], "title": known["title"], "ai_status": "pending"
+                  })
+                  if not confirmed.get("duplicate"):
+                      raise RuntimeError("Supabase announcements duplicate write probe failed")
+                  print("Supabase announcement write path: authenticated and safely deduplicated.")
           PY
 
       - name: Run one EduSecure sync cycle
