@@ -59,8 +59,10 @@ class ReliabilityTests(unittest.TestCase):
     def test_idempotent_create_and_conflict_check(self, request):
         item = {'title': 'Chapter 3 Notes', 'subject': 'Science', 'url': 'https://example.test/A.pdf'}
         request.side_effect = [response(200), response(409), response(200, {'fields': {'pdf_url': {'stringValue': item['url']}}})]
-        self.assertTrue(runner.upload_firestore(item, date(2026, 10, 15), 1, 'token'))
-        self.assertTrue(runner.upload_firestore(item, date(2026, 10, 15), 1, 'token'))
+        # Historical Firestore regression, not the active Supabase publication path.
+        with patch.object(runner, 'MATERIAL_BACKEND', 'firestore'):
+            self.assertTrue(runner.upload_firestore(item, date(2026, 10, 15), 1, 'token'))
+            self.assertTrue(runner.upload_firestore(item, date(2026, 10, 15), 1, 'token'))
         self.assertEqual(request.call_args_list[0].kwargs['params']['documentId'], request.call_args_list[1].kwargs['params']['documentId'])
 
     def test_identical_metadata_does_not_delete_distinct_pdfs(self):
@@ -95,7 +97,7 @@ class ReliabilityTests(unittest.TestCase):
             self.assertEqual(sync_repair._read_runtime_json(sync_repair.MATERIAL_CACHE_FILE)['saved_at'],100)
 
     def test_auth_failure_writes_report_without_starting_browser(self):
-        with tempfile.TemporaryDirectory() as temp, patch.object(runner,'REPORT_FILE',Path(temp)/'report.json'), patch.object(runner,'EDUSECURE_USERNAME','user'), patch.object(runner,'EDUSECURE_PASSWORD','pass'), patch.object(runner,'firebase_sign_in',side_effect=RuntimeError()), patch.object(runner.legacy,'make_driver') as driver:
+        with tempfile.TemporaryDirectory() as temp, patch.object(runner,'REPORT_FILE',Path(temp)/'report.json'), patch.object(runner,'EDUSECURE_USERNAME','user'), patch.object(runner,'EDUSECURE_PASSWORD','pass'), patch.object(runner,'MATERIAL_BACKEND','firestore'), patch.object(runner,'firebase_sign_in',side_effect=RuntimeError()), patch.object(runner.legacy,'make_driver') as driver:
             self.assertEqual(runner.main(), 2)
             self.assertIn('failed', runner.REPORT_FILE.read_text())
             driver.assert_not_called()
