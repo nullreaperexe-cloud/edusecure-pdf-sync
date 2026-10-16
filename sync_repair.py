@@ -38,6 +38,7 @@ BAD_URL_RE = re.compile(
 ORIGINAL_LIST = runner.list_firestore_materials
 ORIGINAL_EXISTING_STATE = runner.existing_state
 ORIGINAL_UPLOAD_FIRESTORE = runner.upload_firestore
+ORIGINAL_ATTACHMENT_EXTRACT = runner.extract_attachment_url
 ANNOUNCEMENT_MODULE = runner.announcements
 ORIGINAL_ANNOUNCEMENT_PROCESS = ANNOUNCEMENT_MODULE.process_no_attachment_message
 WEBSITE_LATEST_DATE: Optional[date] = None
@@ -838,7 +839,7 @@ def exact_attachment_anchors(driver) -> List[Dict[str, str]]:
       if (!el) return false;
       const s = getComputedStyle(el), r = el.getBoundingClientRect();
       return s.display !== 'none' && s.visibility !== 'hidden' &&
-             r.width > 4 && r.height > 4 && r.bottom > 0 && r.top < innerHeight;
+             r.width > 4 && r.height > 4;
     }
     function text(el) {
       return (el.innerText || el.textContent || el.getAttribute('aria-label') ||
@@ -1098,33 +1099,38 @@ def right_click_open_link_in_new_tab(
 
 
 def extract_attachment_url(driver, app_handle: str) -> Optional[str]:
-    """Extract one attachment and block the same EduSecure message twice per run."""
-    detail_text = ""
-    try:
-        detail_text = runner.legacy.app_current_text(driver)
-    except Exception:
-        pass
-    signature = current_message_signature(detail_text)
+    """Find an attachment even if the school renders the link outside the viewport.
 
-    if signature and signature in SEEN_MESSAGE_SIGNATURES:
-        print("Duplicate EduSecure message/PDF detected in this run -> skip second copy")
-        return None
-
+    Never skip a message based on title/text alone: multiple real documents can
+    share the same message. The Firestore writer de-duplicates by exact URL.
+    """
     anchors = exact_attachment_anchors(driver)
-    if not anchors:
-        print("No exact Attachment <a> link found in this message")
-        return None
-
     for index, anchor in enumerate(anchors, start=1):
         print(f"Trying exact Attachment anchor {index}/{len(anchors)}")
         result = right_click_open_link_in_new_tab(driver, app_handle, anchor)
         if result and valid_real_attachment_url(result):
-            if signature:
-                SEEN_MESSAGE_SIGNATURES.add(signature)
-            print(f"Verified uploadable attachment link: {result}")
+            print(f"Verified attachment link: {result}")
             return result
 
-    print("Exact Attachment link(s) found, but none produced a usable URL")
+    # The portal sometimes renders a bare PDF in an iframe (no Attachment
+    # anchor), or uses ASP.NET postback buttons instead of ordinary <a> links.
+    try:
+        direct_pdf = runner.legacy.extract_pdf_from_current_page(driver)
+        if direct_pdf and runner.is_pdf_attachment_url(direct_pdf) and valid_real_attachment_url(direct_pdf):
+            print(f"Recovered direct embedded PDF attachment: {direct_pdf}")
+            return direct_pdf
+    except Exception as exc:
+        print(f"Embedded PDF lookup failed: {type(exc).__name__}")
+
+    try:
+        fallback = ORIGINAL_ATTACHMENT_EXTRACT(driver, app_handle)
+        if fallback and valid_real_attachment_url(fallback):
+            print(f"Recovered attachment through portal button fallback: {fallback}")
+            return fallback
+    except Exception as exc:
+        print(f"Portal attachment fallback failed: {type(exc).__name__}")
+
+    print("No usable attachment URL found using exact links, embedded PDFs or portal buttons.")
     return None
 
 
