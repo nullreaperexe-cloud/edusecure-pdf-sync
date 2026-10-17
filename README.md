@@ -1,10 +1,17 @@
 # EduSecure → 8aPDF Supabase Sync
 
+This repository continuously syncs **new EduSecure school PDFs and teacher announcements** to the new, independent 8aPDF Supabase project.
+The GitHub workflow launches a **five-hour worker window** running `worker_loop.py`; while active, the worker starts a fresh `sync_repair.py` check **every five minutes** (or immediately after a slower cycle finishes, without running concurrent browsers). Each new process gets its own GitHub OIDC identity.
+
+A finalizer uses GitHub's `workflow_dispatch` with the built-in `GITHUB_TOKEN` (`actions: write`) to queue the next five-hour worker. A separate five-minute scheduled watchdog provides backup, and workflow concurrency prevents overlapping workers. The GitHub-hosted 6-hour job cap is respected with a 5h45m job timeout.
+
+**Limits:** GitHub scheduled runs can be delayed or skipped, and an account can exhaust its included Actions minutes. Continuous five-hour jobs consume approximately 720 runner-hours/month if kept running around the clock; check plan quotas and billing before relying on uninterrupted service. A successful full runtime/handoff must be confirmed in Actions logs, not assumed merely because code was committed.
+
 This repository syncs **new EduSecure school PDFs and teacher announcements** to the new, independent 8aPDF Supabase project:
 - Project URL: https://xudhjwojgxblbsebkzso.supabase.co
 - Tables: `public.study_materials` and `public.announcements`
 - GitHub workflow: `.github/workflows/sync.yml`; entrypoint: `sync_repair.py`
-- Schedule: approximately every five minutes (GitHub scheduling is best-effort).
+- Scheduler: a persistent worker checks every five minutes, with independent five-minute scheduled watchdog and explicit five-hour handoff.
 - **Firebase/Firestore credentials are NOT used by the active sync.**
 
 ## Secretless GitHub → Supabase authentication
@@ -32,7 +39,7 @@ Non-PDF school messages, including messages with non-PDF attachments, are publis
 
 - `python -m unittest discover -v` — run all offline regression tests.
 - `python -m py_compile runner.py sync_repair.py supabase_gateway.py supabase_materials.py supabase_announcements.py` — check syntax.
-- Workflow tests run before it attempts to log in to EduSecure.
+- Workflow tests run before it attempts to log in to EduSecure. Each individual cycle has an 18-minute safety timeout; it cannot run concurrently with another cycle.
 - Active sync fails closed if the OIDC identity or live Supabase inventory cannot be verified. It does not use stale Firestore caches for duplicate decisions.
 - A message is only marked uploaded after the Edge function confirms the insert or preexisting record.
 - GitHub Actions serializes overlapping scheduled runs; operations are idempotent for safe retries.
@@ -44,7 +51,7 @@ The old Firestore cleanup functions remain in older migration/legacy helper code
 
 1. Open [EduSecure PDF Sync workflow](https://github.com/nullreaperexe-cloud/edusecure-pdf-sync/actions/workflows/sync.yml).
 2. Use **Run workflow → main → Run workflow**, or inspect the latest scheduled/push run.
-3. Confirm **Validate automation code** passes and the next step shows:
+3. Confirm **Validate automation code** passes, **Keep EduSecure worker alive for 5 hours** starts, and **Dispatch next five-hour worker** queues its successor at completion. The authentication preflight shows:
    `Supabase 8aPDF backend authorized through GitHub Actions OIDC.`
 4. Look for both `Verified Supabase study_materials inventory` and `Verified Supabase announcement IDs`, followed by new PDF/announcement confirmations whenever eligible source messages exist.
 5. Check [8aPDF Supabase](https://supabase.com/dashboard/project/xudhjwojgxblbsebkzso/editor). The website should read the two tables using its public publishable key with RLS-enforced read access.
