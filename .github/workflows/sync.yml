@@ -13,6 +13,8 @@ on:
       - "test_reliability.py"
       - "sync.py"
       - "sync_repair.py"
+      - "worker_loop.py"
+      - "test_worker_loop.py"
       - "supabase_gateway.py"
       - "supabase_materials.py"
       - "supabase_announcements.py"
@@ -28,13 +30,14 @@ on:
       - "requirements.txt"
       - ".github/workflows/sync.yml"
   schedule:
-    # Independent 5-minute watchdog, offset from the busiest minute of each hour.
-    # Does not depend on the previous job succeeding or dispatching another run.
-    - cron: "2-59/5 * * * *"
+    # Independent rescue watchdog; the *running worker* checks every 5 minutes.
+    # Scheduled jobs may be delayed: handoff at completion provides the primary chain.
+    - cron: "7,37 * * * *"
 
 permissions:
   contents: read
   id-token: write
+  actions: write # Allow the worker to dispatch its 5-hour successor.
 
 concurrency:
   # Only one active browser sync; a later scheduled run can safely retry errors.
@@ -44,7 +47,7 @@ concurrency:
 jobs:
   sync:
     runs-on: ubuntu-latest
-    timeout-minutes: 25
+    timeout-minutes: 345 # 5 hours 45 minutes; GitHub-hosted jobs max out at 6h.
     steps:
       - name: Check out repository
         uses: actions/checkout@v7
@@ -69,7 +72,7 @@ jobs:
       - name: Validate automation code
         id: validate
         run: |
-          python -m py_compile runner.py sync.py sync_repair.py supabase_gateway.py supabase_materials.py supabase_announcements.py title_cleaner.py openrouter_title.py announcement_processor.py announcement_backfill.py pdf_integrity.py reliable_http.py push_bridge.py
+          python -m py_compile runner.py sync.py sync_repair.py worker_loop.py supabase_gateway.py supabase_materials.py supabase_announcements.py title_cleaner.py openrouter_title.py announcement_processor.py announcement_backfill.py pdf_integrity.py reliable_http.py push_bridge.py
           python -m unittest discover -v
 
       # Accept repository-scoped GitHub OIDC even when the organization customizes JWT sub.
@@ -115,7 +118,7 @@ jobs:
                   print("Supabase announcement write path: authenticated and safely deduplicated.")
           PY
 
-      - name: Run one EduSecure sync cycle
+      - name: Keep EduSecure worker alive for 5 hours (check every 5 minutes)
         env:
           PYTHONUNBUFFERED: "1"
           EDUSECURE_USERNAME: ${{ secrets.EDUSECURE_USERNAME }}
@@ -124,26 +127,39 @@ jobs:
           ANNOUNCEMENT_RECOVERY_DAYS: "7"
           CHECK_WEBSITE_DATE: "0"
           OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+          WORKER_DURATION_MINUTES: "300"
+          WORKER_INTERVAL_SECONDS: "300"
+          WORKER_CYCLE_TIMEOUT_SECONDS: "1080"
+        run: |
+          python -u worker_loop.py
+
+      - name: Dispatch next five-hour worker
+        # This is also attempted on failed sync cycles; scheduled watchdog is
+        # the independent fallback if dispatch cannot succeed.
+        if: always()
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
         run: |
           set +e
-          echo "===== EduSecure check at $(date -u '+%Y-%m-%d %H:%M:%S UTC') ====="
-
-          timeout --signal=TERM --kill-after=15s 18m python sync_repair.py
-          EXIT_CODE=$?
-          if [ "$EXIT_CODE" -eq 124 ] || [ "$EXIT_CODE" -eq 137 ]; then
-            python -c 'import json,pathlib; p=pathlib.Path("sync_report.json"); d=json.loads(p.read_text()) if p.exists() else {}; d.update(status="timed_out",failures=d.get("failures",[])+["The sync cycle exceeded its time limit; the next cycle will retry"]); p.write_text(json.dumps(d,indent=2))'
-          fi
-
-          if [ "$EXIT_CODE" -ne 0 ]; then
-            echo "EduSecure cycle failed with code ${EXIT_CODE}."
+          gh workflow run sync.yml --repo "$GH_REPO" --ref main
+          RESULT=$?
+          if [ "$RESULT" -eq 0 ]; then
+            echo "Next worker dispatched. Concurrency will serialize the handoff."
           else
-            echo "EduSecure cycle completed cleanly."
+            echo "::warning::Unable to dispatch successor. The 30-minute scheduled watchdog will retry."
           fi
-          exit "$EXIT_CODE"
+          exit "$RESULT"
 
       - name: Add cycle status to the run summary
         if: always()
         run: |
+          if [ -f worker_summary.json ]; then
+            echo '### 5-hour EduSecure worker' >> "$GITHUB_STEP_SUMMARY"
+            echo '```json' >> "$GITHUB_STEP_SUMMARY"
+            cat worker_summary.json >> "$GITHUB_STEP_SUMMARY"
+            echo '```' >> "$GITHUB_STEP_SUMMARY"
+          fi
           if [ -f sync_report.json ]; then
             echo '```json' >> "$GITHUB_STEP_SUMMARY"
             cat sync_report.json >> "$GITHUB_STEP_SUMMARY"
@@ -157,6 +173,7 @@ jobs:
           name: edusecure-sync-diagnostics-${{ github.run_id }}
           path: |
             sync_report.json
+            worker_summary.json
             debug_*.png
           if-no-files-found: ignore
           retention-days: 7
