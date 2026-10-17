@@ -30,9 +30,10 @@ on:
       - "requirements.txt"
       - ".github/workflows/sync.yml"
   schedule:
-    # Independent rescue watchdog; the *running worker* checks every 5 minutes.
-    # Scheduled jobs may be delayed: handoff at completion provides the primary chain.
-    - cron: "7,37 * * * *"
+    # Independent five-minute watchdog: a pending run can take over if the
+    # current five-hour worker ends, and the finalizer dispatches a successor.
+    # GitHub schedule events are best-effort and may be delayed or skipped.
+    - cron: "2-59/5 * * * *"
 
 permissions:
   contents: read
@@ -147,7 +148,7 @@ jobs:
           if [ "$RESULT" -eq 0 ]; then
             echo "Next worker dispatched. Concurrency will serialize the handoff."
           else
-            echo "::warning::Unable to dispatch successor. The 30-minute scheduled watchdog will retry."
+            echo "::warning::Unable to dispatch successor. The five-minute scheduled watchdog will retry."
           fi
           exit "$RESULT"
 
