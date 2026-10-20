@@ -132,7 +132,6 @@ jobs:
           GDRIVE_BACKUP_CLIENT_ID: ${{ secrets.GDRIVE_BACKUP_CLIENT_ID }}
           GDRIVE_BACKUP_CLIENT_SECRET: ${{ secrets.GDRIVE_BACKUP_CLIENT_SECRET }}
           GDRIVE_BACKUP_REFRESH_TOKEN: ${{ secrets.GDRIVE_BACKUP_REFRESH_TOKEN }}
-          GDRIVE_BACKUP_FOLDER_ID: ${{ secrets.GDRIVE_BACKUP_FOLDER_ID }}
           GDRIVE_BACKUP_MAX_PDFS_PER_RUN: "100"
         timeout-minutes: 22
         run: |
@@ -171,7 +170,6 @@ jobs:
           GDRIVE_BACKUP_CLIENT_ID: ${{ secrets.GDRIVE_BACKUP_CLIENT_ID }}
           GDRIVE_BACKUP_CLIENT_SECRET: ${{ secrets.GDRIVE_BACKUP_CLIENT_SECRET }}
           GDRIVE_BACKUP_REFRESH_TOKEN: ${{ secrets.GDRIVE_BACKUP_REFRESH_TOKEN }}
-          GDRIVE_BACKUP_FOLDER_ID: ${{ secrets.GDRIVE_BACKUP_FOLDER_ID }}
           DRIVE_FIRST_REQUIRED: "1"
         run: |
           python -u worker_loop.py
