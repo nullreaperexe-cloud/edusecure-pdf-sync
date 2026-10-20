@@ -96,6 +96,8 @@ def upload_announcement(
         "ai_status":str(item.get("aiStatus") or "complete"),
         "raw":raw,
     }
+    import drive_first
+    drive_first.prepare_announcement(payload)
     result=gateway.call("publishAnnouncement",record=payload)
     if result.get("inserted") or result.get("duplicate"):
         print("✅ Supabase school announcement confirmed: "+payload["title"][:100])
