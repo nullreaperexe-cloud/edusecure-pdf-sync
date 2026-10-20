@@ -154,8 +154,10 @@ class Drive:
         if existing and (existing.get("appProperties") or {}).get("sha256") == sha:
             return existing["id"], False
 
-        meta = {"name": name, "mimeType": mime_type,
-                "appProperties": {"sha256": sha}}
+        props = {"sha256": sha}
+        if mime_type == "application/json" and name in ("materials.json", "announcements.json"):
+            props["record_count"] = str(len(json.loads(data).get("records", [])))
+        meta = {"name": name, "mimeType": mime_type, "appProperties": props}
         if not existing:
             meta["parents"] = [parent]
         url = UPLOAD_API + ("/" + existing["id"] if existing else "")
@@ -184,8 +186,7 @@ class Drive:
         file_id = result.get("id") or (existing and existing["id"])
         if not file_id:
             raise RuntimeError("Google Drive upload not confirmed")
-        index[name] = {"id": file_id, "name": name,
-                       "appProperties": {"sha256": sha}}
+        index[name] = {"id": file_id, "name": name, "appProperties": props}
         return file_id, True
 
 
@@ -201,7 +202,7 @@ def validate_snapshot(rows, old_index, name):
     """Never replace an existing nonempty snapshot with a suspicious empty set."""
     old = old_index.get(name) or {}
     old_count = (old.get("appProperties") or {}).get("record_count")
-    if old_count and len(rows) == 0:
+    if old_count and int(old_count) > 0 and len(rows) == 0:
         raise RuntimeError("Refusing to overwrite previously populated " + name + " with zero records")
 
 
@@ -291,7 +292,7 @@ def backup():
 
     max_pdfs = max(0, min(100, int(os.getenv("GDRIVE_BACKUP_MAX_PDFS_PER_RUN", "10"))))
     max_bytes = max(1, min(100, int(os.getenv("GDRIVE_BACKUP_MAX_PDF_MIB", "25")))) * 1024 * 1024
-    copied, existing_count, pending, errors, pdf_map = 0, 0, 0, [], {}
+    copied, attempted, existing_count, pending, errors, pdf_map = 0, 0, 0, 0, [], {}
     for row in materials:
         url = str(row.get("pdf_url") or "").strip()
         if not url:
@@ -303,9 +304,10 @@ def backup():
             existing_count += 1
             pdf_map[str(row.get("id") or url)] = {"drive_id": cached["id"], "name": name}
             continue
-        if copied >= max_pdfs:
+        if attempted >= max_pdfs:
             pending += 1
             continue
+        attempted += 1
         try:
             blob = fetch_pdf(url, max_bytes)
             file_id, _ = drive.put(pdf_folder, name, blob, "application/pdf", pdf_index)
