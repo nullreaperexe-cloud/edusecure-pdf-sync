@@ -61,3 +61,66 @@ A code commit or passing local unit tests **does not alone prove** a live EduSec
 ## Known separate feature
 
 Older school push notification wake-up depended on Firebase Authentication. It has been disabled in the main sync rather than allowing that retired dependency to break PDF/announcement publication. Push delivery requires a separate Supabase-compatible implementation and is not guaranteed by this migration.
+
+
+## Google Drive disaster-recovery backup
+
+The same five-hour EduSecure worker now invokes **drive_backup.py** after a
+normal sync cycle, no more than once per hour (configurable). Backup failure,
+missing credentials, or a slow Google Drive request cannot block Supabase sync.
+
+### What gets saved
+
+- Full current Supabase **study_materials** and **announcements** inventories,
+  including older records, raw JSON, and admin-panel edits.
+- Private **8aPDF_Backup/materials.json** and
+  **8aPDF_Backup/announcements.json**, with a dated snapshot on changes in
+  **daily_snapshots/**.
+- Actual PDF files in a private **PDFs/** subfolder, keyed by SHA-256 of the
+  original PDF URL. Up to 10 PDF attempts per backup pass (configurable).
+  Inaccessible, oversized, or non-PDF source URLs are reported as missing.
+- **backup-manifest.json**, plus **drive_backup_report.json** in the GitHub
+  Actions run diagnostics with counts, pending files and failures.
+
+This is **backup only**. It does not turn Google Drive into a live database,
+public CDN, website failover endpoint or music store. Supabase remains primary.
+
+### Activate Google Drive write access
+
+The existing GitHub OIDC identity authorizes only Supabase. For private
+Google Drive backups, the worker requires an OAuth refresh token from the
+Google account with the intended 5 TB storage. The existing music library's
+read-only integration, or a Google Drive connection in ChatGPT, does not
+automatically authorize this GitHub worker.
+
+1. Enable the Google Drive API in Google Cloud Console. Configure Google Auth
+   Platform / OAuth consent for your Google account. Create a **Desktop app**
+   OAuth client and authorize the narrow **drive.file** scope:
+   https://www.googleapis.com/auth/drive.file
+2. On your own device, use a trusted installed-app OAuth flow with offline
+   access and explicit consent to obtain a refresh token. If the app is
+   External and stays in Testing, refresh tokens can expire in seven days.
+3. In the GitHub repository, open **Settings → Secrets and variables → Actions**
+   and add these three private repository secrets:
+   - **GDRIVE_BACKUP_CLIENT_ID**
+   - **GDRIVE_BACKUP_CLIENT_SECRET**
+   - **GDRIVE_BACKUP_REFRESH_TOKEN**
+4. Optional: add **GDRIVE_BACKUP_FOLDER_ID** for an existing folder accessible
+   to that OAuth app. Otherwise the script creates the **8aPDF_Backup** folder
+   in its account's own My Drive. Keep it PRIVATE.
+5. From **Actions → EduSecure PDF Sync → Run workflow (main)**, check the
+   job summary and diagnostics. **not_configured** means the secrets are not
+   ready; **partial** means some PDF originals remain pending or failed;
+   **complete** means the metadata and all available PDF originals were backed
+   up; **failed** needs troubleshooting, but primary sync is unaffected.
+
+Optional worker variables: GDRIVE_BACKUP_INTERVAL_SECONDS (3600),
+GDRIVE_BACKUP_TIMEOUT_SECONDS (240), GDRIVE_BACKUP_MAX_PDFS_PER_RUN (10),
+GDRIVE_BACKUP_MAX_PDF_MIB (25), GDRIVE_BACKUP_ALLOWED_PDF_HOSTS
+(comma-separated allowlisted exact HTTPS hostnames). URLs outside this
+allowlist are intentionally skipped for safety. Files can only be restored
+manually until a separate website fallback/restore service is built.
+
+Never add OAuth tokens, school credentials, or private backup files to the
+public GitHub repository or public URLs. Run offline regression tests with
+**python -m unittest discover -v**.
