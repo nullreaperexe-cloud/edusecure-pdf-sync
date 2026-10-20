@@ -58,6 +58,10 @@ def upload_material(
     item: Dict[str, Any], source_date: date, order: int, _unused_token: str = ""
 ) -> bool:
     payload = build_material(item, source_date, order)
+    # Mandatory Drive-first publication when requested in the worker.
+    # Any failure raises and prevents the Supabase insert.
+    import drive_first
+    drive_first.prepare_material(payload)
     response = gateway.call("insertMaterial", record=payload)
     if response.get("inserted"):
         print("✅ New PDF publication confirmed by 8aPDF Supabase")
