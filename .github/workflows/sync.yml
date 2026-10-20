@@ -124,6 +124,7 @@ jobs:
           PY
 
       - name: Bootstrap complete Google Drive backup BEFORE live EduSecure sync
+        id: drive_bootstrap
         env:
           PYTHONUNBUFFERED: "1"
           SUPABASE_URL: "https://xudhjwojgxblbsebkzso.supabase.co"
@@ -176,9 +177,9 @@ jobs:
           python -u worker_loop.py
 
       - name: Dispatch next five-hour worker
-        # This is also attempted on failed sync cycles; scheduled watchdog is
-        # the independent fallback if dispatch cannot succeed.
-        if: always()
+        # Strict Drive-first: never endlessly relaunch workers when the
+        # mandatory historical Drive bootstrap did not succeed.
+        if: ${{ always() && steps.drive_bootstrap.outcome == 'success' }}
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
