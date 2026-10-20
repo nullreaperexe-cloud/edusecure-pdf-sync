@@ -4,7 +4,11 @@ Reads BOTH complete catalogues using the existing GitHub-OIDC-verified Supabase
 Edge Function. Copies JSON snapshots and bounded PDF originals into a private
 Google Drive folder via OAuth. Does not write to Supabase or change website data.
 
-Required GitHub Actions secrets:
+Required GitHub Actions secret (recommended):
+  GDRIVE_BACKUP_OAUTH_JSON: JSON containing client_id, client_secret,
+  refresh_token. The standard Google Cloud OAuth client JSON alone does NOT
+  include a refresh token, so it cannot authorize unattended backups.
+  Legacy three-secret configuration is still supported:
   GDRIVE_BACKUP_CLIENT_ID, GDRIVE_BACKUP_CLIENT_SECRET,
   GDRIVE_BACKUP_REFRESH_TOKEN
 Optional:
@@ -52,11 +56,52 @@ def record_status(**kw):
     STATUS.write_text(json.dumps({"checked_at": stamp(), **kw}, indent=2), encoding="utf-8")
 
 
+def oauth_credentials():
+    """Read all credentials from one Actions secret, or legacy three secrets.
+
+    Do not print or report credential contents, including invalid JSON.
+    """
+    packed = os.environ.get("GDRIVE_BACKUP_OAUTH_JSON", "").strip()
+    if packed:
+        try:
+            value = json.loads(packed)
+        except (ValueError, TypeError) as exc:
+            raise ValueError("GDRIVE_BACKUP_OAUTH_JSON is not valid JSON") from exc
+        if not isinstance(value, dict):
+            raise ValueError("GDRIVE_BACKUP_OAUTH_JSON must contain a JSON object")
+        # The standard downloaded Google OAuth client file nests the client
+        # details in a web or installed object, and has no refresh token.
+        client = value.get("web") or value.get("installed") or value
+        if not isinstance(client, dict):
+            raise ValueError("GDRIVE_BACKUP_OAUTH_JSON client must be an object")
+        result = {
+            "client_id": client.get("client_id"),
+            "client_secret": client.get("client_secret"),
+            "refresh_token": value.get("refresh_token"),
+        }
+    else:
+        result = {
+            "client_id": os.getenv("GDRIVE_BACKUP_CLIENT_ID", ""),
+            "client_secret": os.getenv("GDRIVE_BACKUP_CLIENT_SECRET", ""),
+            "refresh_token": os.getenv("GDRIVE_BACKUP_REFRESH_TOKEN", ""),
+        }
+    if any(not isinstance(v, str) or not v.strip() for v in result.values()):
+        raise ValueError("Google OAuth client_id, client_secret and refresh_token are required")
+    return {k: v.strip() for k, v in result.items()}
+
+
 def configuration():
-    keys = ("GDRIVE_BACKUP_CLIENT_ID", "GDRIVE_BACKUP_CLIENT_SECRET",
-            "GDRIVE_BACKUP_REFRESH_TOKEN")
-    missing = [k for k in keys if not os.getenv(k, "").strip()]
-    return missing
+    try:
+        oauth_credentials()
+        return []
+    except ValueError:
+        if os.getenv("GDRIVE_BACKUP_OAUTH_JSON", "").strip():
+            return ["valid GDRIVE_BACKUP_OAUTH_JSON (including refresh_token)"]
+        return [
+            k for k in ("GDRIVE_BACKUP_CLIENT_ID", "GDRIVE_BACKUP_CLIENT_SECRET",
+                         "GDRIVE_BACKUP_REFRESH_TOKEN")
+            if not os.getenv(k, "").strip()
+        ]
 
 
 def digest(data):
@@ -97,14 +142,10 @@ def assert_ok(response):
 class Drive:
     def __init__(self, session=None):
         self.session = session or requests.Session()
+        credentials = oauth_credentials()
         auth = assert_ok(retry_call(
             self.session, "POST", "https://oauth2.googleapis.com/token",
-            data={
-                "client_id": os.environ["GDRIVE_BACKUP_CLIENT_ID"],
-                "client_secret": os.environ["GDRIVE_BACKUP_CLIENT_SECRET"],
-                "refresh_token": os.environ["GDRIVE_BACKUP_REFRESH_TOKEN"],
-                "grant_type": "refresh_token",
-            },
+            data={**credentials, "grant_type": "refresh_token"},
         )).json()
         token = auth.get("access_token", "")
         if not token:
