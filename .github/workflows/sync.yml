@@ -14,6 +14,8 @@ on:
       - "sync.py"
       - "sync_repair.py"
       - "worker_loop.py"
+      - "drive_backup.py"
+      - "test_drive_backup.py"
       - "test_worker_loop.py"
       - "supabase_gateway.py"
       - "supabase_materials.py"
@@ -73,7 +75,7 @@ jobs:
       - name: Validate automation code
         id: validate
         run: |
-          python -m py_compile runner.py sync.py sync_repair.py worker_loop.py supabase_gateway.py supabase_materials.py supabase_announcements.py title_cleaner.py openrouter_title.py announcement_processor.py announcement_backfill.py pdf_integrity.py reliable_http.py push_bridge.py
+          python -m py_compile runner.py sync.py sync_repair.py worker_loop.py supabase_gateway.py supabase_materials.py supabase_announcements.py title_cleaner.py openrouter_title.py announcement_processor.py announcement_backfill.py pdf_integrity.py reliable_http.py push_bridge.py drive_backup.py
           python -m unittest discover -v
 
       # Accept repository-scoped GitHub OIDC even when the organization customizes JWT sub.
@@ -131,6 +133,12 @@ jobs:
           WORKER_DURATION_MINUTES: "300"
           WORKER_INTERVAL_SECONDS: "300"
           WORKER_CYCLE_TIMEOUT_SECONDS: "1080"
+          GDRIVE_BACKUP_INTERVAL_SECONDS: "3600"
+          GDRIVE_BACKUP_TIMEOUT_SECONDS: "240"
+          GDRIVE_BACKUP_CLIENT_ID: ${{ secrets.GDRIVE_BACKUP_CLIENT_ID }}
+          GDRIVE_BACKUP_CLIENT_SECRET: ${{ secrets.GDRIVE_BACKUP_CLIENT_SECRET }}
+          GDRIVE_BACKUP_REFRESH_TOKEN: ${{ secrets.GDRIVE_BACKUP_REFRESH_TOKEN }}
+          GDRIVE_BACKUP_FOLDER_ID: ${{ secrets.GDRIVE_BACKUP_FOLDER_ID }}
         run: |
           python -u worker_loop.py
 
@@ -161,6 +169,12 @@ jobs:
             cat worker_summary.json >> "$GITHUB_STEP_SUMMARY"
             echo '```' >> "$GITHUB_STEP_SUMMARY"
           fi
+          if [ -f drive_backup_report.json ]; then
+            echo '### Google Drive backup' >> "$GITHUB_STEP_SUMMARY"
+            echo '```json' >> "$GITHUB_STEP_SUMMARY"
+            cat drive_backup_report.json >> "$GITHUB_STEP_SUMMARY"
+            echo '```' >> "$GITHUB_STEP_SUMMARY"
+          fi
           if [ -f sync_report.json ]; then
             echo '```json' >> "$GITHUB_STEP_SUMMARY"
             cat sync_report.json >> "$GITHUB_STEP_SUMMARY"
@@ -175,6 +189,7 @@ jobs:
           path: |
             sync_report.json
             worker_summary.json
+            drive_backup_report.json
             debug_*.png
           if-no-files-found: ignore
           retention-days: 7
