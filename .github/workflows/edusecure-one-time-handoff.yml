@@ -1,0 +1,67 @@
+name: EduSecure One-Time Worker Handoff
+
+# Push-triggered one-time maintenance workflow.
+# This workflow is independent from the long-running sync concurrency group.
+on:
+  push:
+    paths:
+      - ".github/workflows/edusecure-one-time-handoff.yml"
+
+permissions:
+  actions: write
+  contents: read
+
+jobs:
+  handoff:
+    runs-on: ubuntu-latest
+    timeout-minutes: 7
+    steps:
+      - name: Stop specified old EduSecure worker
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          OLD_RUN_ID: "39371338758"
+        run: |
+          set -euo pipefail
+          STATUS="$(gh api "repos/$GH_REPO/actions/runs/$OLD_RUN_ID" --jq '.status')"
+          echo "Old EduSecure run status before handoff: $STATUS"
+          if [ "$STATUS" != "completed" ]; then
+            gh api --method POST "repos/$GH_REPO/actions/runs/$OLD_RUN_ID/cancel"
+            echo "Cancellation requested for EduSecure run #2704."
+          else
+            echo "EduSecure run #2704 had already finished."
+          fi
+
+      - name: Wait for worker to release concurrency slot
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          OLD_RUN_ID: "39371338758"
+        run: |
+          set -euo pipefail
+          for attempt in {1..24}; do
+            STATE="$(gh api "repos/$GH_REPO/actions/runs/$OLD_RUN_ID" --jq '.status')"
+            echo "Old worker status: $STATE"
+            if [ "$STATE" = "completed" ]; then
+              exit 0
+            fi
+            sleep 10
+          done
+          echo "::warning::Old worker cancellation still processing; next worker remains queued."
+
+      - name: Ensure latest EduSecure worker is scheduled
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          REQUESTED_NEW_RUN_ID: "39388940626"
+        run: |
+          set -euo pipefail
+          STATE="$(gh api "repos/$GH_REPO/actions/runs/$REQUESTED_NEW_RUN_ID" --jq '.status')"
+          CONCLUSION="$(gh api "repos/$GH_REPO/actions/runs/$REQUESTED_NEW_RUN_ID" --jq '.conclusion // ""')"
+          echo "Requested new worker #2715: status=$STATE, conclusion=$CONCLUSION"
+          if [ "$STATE" = "completed" ] && [ "$CONCLUSION" != "success" ]; then
+            gh workflow run sync.yml --repo "$GH_REPO" --ref main
+            echo "Fresh latest-main EduSecure worker dispatched."
+          else
+            echo "Requested worker is still queued, starting, running, or has succeeded; no duplicate dispatch."
+          fi
