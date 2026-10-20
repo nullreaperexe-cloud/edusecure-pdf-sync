@@ -45,6 +45,20 @@ def run_cycle(timeout_seconds=1080, command=None):
         return 2
 
 
+def run_drive_backup(timeout_seconds=240):
+    """Separate bounded backup. Failure cannot fail EduSecure publication."""
+    try:
+        result = subprocess.run([sys.executable, "drive_backup.py"],
+                                timeout=timeout_seconds, check=False)
+        return int(result.returncode)
+    except subprocess.TimeoutExpired:
+        print("Drive backup timed out; primary Supabase sync remains unaffected.", flush=True)
+        return 124
+    except Exception as exc:
+        print("Drive backup subprocess error: " + type(exc).__name__, flush=True)
+        return 2
+
+
 def worker(duration_seconds=18000,interval_seconds=300,timeout_seconds=1080,
            max_cycles=0,command=None):
     """Run for up to five hours. Do not shorten a cycle already in progress."""
@@ -54,10 +68,14 @@ def worker(duration_seconds=18000,interval_seconds=300,timeout_seconds=1080,
     started=time.monotonic()
     deadline=started+duration_seconds
     next_tick=started
+    last_backup_started=None
+    backup_interval=max(300, int(os.getenv("GDRIVE_BACKUP_INTERVAL_SECONDS","3600")))
+    backup_timeout=max(60, int(os.getenv("GDRIVE_BACKUP_TIMEOUT_SECONDS","240")))
     summary={"started_at":now_iso(),"planned_minutes":round(duration_seconds/60,2),
              "check_interval_seconds":interval_seconds,"checks":0,
              "successful":0,"failed":0,"timed_out":0,"last_exit_code":None,
-             "last_run_at":None,"check_log":[]}
+             "last_run_at":None,"check_log":[],
+             "drive_backup_checks":0,"drive_backup_failures":0,"last_drive_backup_at":None}
     print(f"Starting {duration_seconds/3600:.2f}h 8aPDF worker; "+
           f"checking EduSecure every {interval_seconds}s.",flush=True)
     try:
@@ -73,6 +91,16 @@ def worker(duration_seconds=18000,interval_seconds=300,timeout_seconds=1080,
             checked=now_iso()
             print(f"====== EduSecure / Supabase check #{n} at {checked} ======",flush=True)
             rc=run_cycle(timeout_seconds,command)
+            # Back up BOTH inventories after the normal EduSecure cycle, at most
+            # hourly by default. Initial backup is always attempted; failures
+            # only affect backup diagnostics, never the primary sync result.
+            if last_backup_started is None or time.monotonic()-last_backup_started>=backup_interval:
+                last_backup_started=time.monotonic()
+                backup_rc=run_drive_backup(backup_timeout)
+                summary["drive_backup_checks"]+=1
+                summary["drive_backup_failures"]+=int(backup_rc!=0)
+                summary["last_drive_backup_at"]=now_iso()
+                print("Drive backup subprocess exit: "+str(backup_rc),flush=True)
             summary["checks"]=n
             summary["last_run_at"]=checked
             summary["last_exit_code"]=rc
