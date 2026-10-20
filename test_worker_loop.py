@@ -20,7 +20,8 @@ class WorkerLoopTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as folder:
             with (patch.object(w,"SUMMARY",Path(folder)/"worker.json"),
                   patch.object(w,"STOP",False),
-                  patch.object(w,"run_cycle",side_effect=[2,0]) as run):
+                  patch.object(w,"run_cycle",side_effect=[2,0]) as run,
+                  patch.object(w,"run_drive_backup",return_value=0) as backup):
                 status=w.worker(duration_seconds=10,interval_seconds=0.002,
                                 timeout_seconds=10,max_cycles=2)
                 summary=json.loads((Path(folder)/"worker.json").read_text())
@@ -29,15 +30,30 @@ class WorkerLoopTests(unittest.TestCase):
             self.assertEqual(summary["checks"],2)
             self.assertEqual(summary["failed"],1)
             self.assertEqual(summary["successful"],1)
+            self.assertEqual(backup.call_count,1)
+            self.assertEqual(summary["drive_backup_checks"],1)
 
     def test_all_failed_checks_report_failure_but_complete_window(self):
         with tempfile.TemporaryDirectory() as folder:
             with (patch.object(w,"SUMMARY",Path(folder)/"worker.json"),
                   patch.object(w,"STOP",False),
-                  patch.object(w,"run_cycle",return_value=2)):
+                  patch.object(w,"run_cycle",return_value=2),
+                  patch.object(w,"run_drive_backup",return_value=1)):
                 status=w.worker(duration_seconds=10,interval_seconds=0.001,
                                 timeout_seconds=10,max_cycles=2)
             self.assertEqual(status,1)
+
+    def test_drive_failure_does_not_mark_supabase_sync_failed(self):
+        with tempfile.TemporaryDirectory() as folder:
+            with (patch.object(w,"SUMMARY",Path(folder)/"worker.json"),
+                  patch.object(w,"STOP",False),
+                  patch.object(w,"run_cycle",return_value=0),
+                  patch.object(w,"run_drive_backup",return_value=1)):
+                self.assertEqual(w.worker(duration_seconds=10,interval_seconds=0.001,
+                                          timeout_seconds=5,max_cycles=1),0)
+                summary=json.loads((Path(folder)/"worker.json").read_text())
+            self.assertEqual(summary["successful"],1)
+            self.assertEqual(summary["drive_backup_failures"],1)
 
     def test_timeout_is_not_retried_in_the_same_cycle(self):
         with patch.object(w.subprocess,"run",side_effect=subprocess.TimeoutExpired("python",5)) as run:
