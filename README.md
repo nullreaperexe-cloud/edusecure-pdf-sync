@@ -85,42 +85,52 @@ missing credentials, or a slow Google Drive request cannot block Supabase sync.
 This is **backup only**. It does not turn Google Drive into a live database,
 public CDN, website failover endpoint or music store. Supabase remains primary.
 
-### Activate Google Drive write access
+### Activate backup with ZERO PC commands (browser-only)
 
-The existing GitHub OIDC identity authorizes only Supabase. For private
-Google Drive backups, the worker requires an OAuth refresh token from the
-Google account with the intended 5 TB storage. The existing music library's
-read-only integration, or a Google Drive connection in ChatGPT, does not
-automatically authorize this GitHub worker.
+The recommended route uses Google OAuth 2.0 Playground and just ONE GitHub
+Actions secret. A downloaded OAuth client JSON has no refresh token and
+cannot authorize unattended uploads by itself.
 
-1. Enable the Google Drive API in Google Cloud Console. Configure Google Auth
-   Platform / OAuth consent for your Google account. Create a **Desktop app**
-   OAuth client and authorize the narrow **drive.file** scope:
-   https://www.googleapis.com/auth/drive.file
-2. On your own computer, download the Desktop OAuth client JSON from your
-   Google Cloud project. Then run the local helper (never in GitHub Actions):
+1. In Google Cloud Console select the backup project. Open **Google Auth
+   Platform → Clients → Create client**; use **Web application** and add
+   this Authorized redirect URI: https://developers.google.com/oauthplayground
+   Create client and keep its web client ID and client secret.
+2. Under **Google Auth Platform → Audience**, add your Drive account as a
+   test user (if Testing). **Data access** should include
+   https://www.googleapis.com/auth/drive.file . Testing refresh tokens can
+   expire after seven days; use In production when permitted.
+3. Open https://developers.google.com/oauthplayground and click ⚙.
+   Set OAuth flow=Server-side, Access type=Offline, Force prompt=Consent
+   Screen; enable **Use your own OAuth credentials** and paste your NEW
+   WEB application ID and secret. Close settings.
+4. In Step 1 paste scope https://www.googleapis.com/auth/drive.file .
+   Click **Authorize APIs**, choose the Drive owner account, approve.
+   In Step 2 click **Exchange authorization code for tokens**.
+   Copy the REFRESH token (not the short-lived access token). Do not use
+   the Playground default client: its refresh tokens expire in 24 hours.
+5. Go to GitHub repository Settings → Secrets and variables → Actions →
+   New repository secret. Name: **GDRIVE_BACKUP_OAUTH_JSON**. Value is a
+   JSON object with three keys: client_id, client_secret, refresh_token.
+   Fill the values in GitHub only; never paste credentials in chat.
+   Example with placeholders:
 
-       python -m pip install google-auth-oauthlib
-       python scripts/setup_drive_oauth.py /path/to/client_secret.json
+       {
+         "client_id": "WEB_APPLICATION_CLIENT_ID",
+         "client_secret": "WEB_APPLICATION_CLIENT_SECRET",
+         "refresh_token": "GOOGLE_OAUTH_PLAYGROUND_REFRESH_TOKEN"
+       }
 
-   Sign in to the Google account with your Drive storage. The helper prints
-   the three GitHub secret values privately in your local terminal. Do not
-   upload the client JSON or terminal output. If the OAuth app is External
-   and stays in Testing, refresh tokens can expire in seven days.
-3. In the GitHub repository, open **Settings → Secrets and variables → Actions**
-   and add these three private repository secrets:
-   - **GDRIVE_BACKUP_CLIENT_ID**
-   - **GDRIVE_BACKUP_CLIENT_SECRET**
-   - **GDRIVE_BACKUP_REFRESH_TOKEN**
-4. Optional: add **GDRIVE_BACKUP_FOLDER_ID** for an existing folder accessible
-   to that OAuth app. Otherwise the script creates the **8aPDF_Backup** folder
-   in its account's own My Drive. Keep it PRIVATE.
-5. From **Actions → EduSecure PDF Sync → Run workflow (main)**, check the
-   job summary and diagnostics. **not_configured** means the secrets are not
-   ready; **partial** means some PDF originals remain pending or failed;
-   **complete** means the metadata and all available PDF originals were backed
-   up; **failed** needs troubleshooting, but primary sync is unaffected.
+6. Run GitHub Actions → EduSecure PDF Sync → Run workflow (main). Inspect
+   Google Drive backup status in the run summary. Successful backups are
+   stored in a PRIVATE 8aPDF_Backup folder under that Google account.
 
+Existing three-secret configuration and local desktop OAuth helper still
+work. The combined JSON takes precedence. Google Cloud's downloaded
+web/installed client JSON or a service-account JSON alone is NOT sufficient
+for writing into the owner's personal Google Drive quota.
+
+Keep credentials and backed-up school data private. These backups do not
+change Supabase, music files or frontend failover.
 Optional worker variables: GDRIVE_BACKUP_INTERVAL_SECONDS (3600),
 GDRIVE_BACKUP_TIMEOUT_SECONDS (240), GDRIVE_BACKUP_MAX_PDFS_PER_RUN (10),
 GDRIVE_BACKUP_MAX_PDF_MIB (25), GDRIVE_BACKUP_ALLOWED_PDF_HOSTS
