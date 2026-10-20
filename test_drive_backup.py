@@ -14,6 +14,7 @@ class BackupTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as d:
             with (patch.object(backup, "STATUS", Path(d) / "status.json"),
                   patch.dict(os.environ, {
+                      "GDRIVE_BACKUP_OAUTH_JSON": "",
                       "GDRIVE_BACKUP_CLIENT_ID": "",
                       "GDRIVE_BACKUP_CLIENT_SECRET": "",
                       "GDRIVE_BACKUP_REFRESH_TOKEN": "",
@@ -21,6 +22,34 @@ class BackupTests(unittest.TestCase):
                 self.assertEqual(backup.backup(), 0)
                 report = json.loads((Path(d) / "status.json").read_text())
                 self.assertEqual(report["status"], "not_configured")
+
+
+    def test_single_json_secret_with_refresh_token(self):
+        config = {"client_id": "abc.apps.googleusercontent.com",
+                  "client_secret": "not-public",
+                  "refresh_token": "refresh"}
+        with patch.dict(os.environ, {"GDRIVE_BACKUP_OAUTH_JSON": json.dumps(config)}):
+            self.assertEqual(backup.configuration(), [])
+            self.assertEqual(backup.oauth_credentials(), config)
+
+    def test_google_cloud_downloaded_json_without_refresh_token_rejected(self):
+        cloud_client_file = {
+            "web": {"client_id": "abc.apps.googleusercontent.com",
+                    "client_secret": "client-secret",
+                    "redirect_uris": ["https://developers.google.com/oauthplayground"]},
+        }
+        with patch.dict(os.environ, {"GDRIVE_BACKUP_OAUTH_JSON": json.dumps(cloud_client_file)}):
+            self.assertTrue(backup.configuration())
+            with self.assertRaisesRegex(ValueError, "refresh_token"):
+                backup.oauth_credentials()
+
+    def test_invalid_json_does_not_expose_secret_in_error(self):
+        private = "super-secret"
+        with patch.dict(os.environ, {"GDRIVE_BACKUP_OAUTH_JSON": private}):
+            self.assertTrue(backup.configuration())
+            with self.assertRaises(ValueError) as raised:
+                backup.oauth_credentials()
+            self.assertNotIn(private, str(raised.exception))
 
     def test_only_explicit_https_pdf_providers_are_fetched(self):
         with patch.dict(os.environ, {"GDRIVE_BACKUP_ALLOWED_PDF_HOSTS":
