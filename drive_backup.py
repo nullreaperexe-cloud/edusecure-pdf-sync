@@ -293,7 +293,11 @@ def backup():
     max_pdfs = max(0, min(100, int(os.getenv("GDRIVE_BACKUP_MAX_PDFS_PER_RUN", "10"))))
     max_bytes = max(1, min(100, int(os.getenv("GDRIVE_BACKUP_MAX_PDF_MIB", "25")))) * 1024 * 1024
     copied, attempted, existing_count, pending, errors, pdf_map = 0, 0, 0, 0, [], {}
-    for row in materials:
+    # Rotate the starting point every hour. Otherwise ten permanently broken
+    # URLs could exhaust the attempt budget forever and starve later PDFs.
+    rotation = (int(time.time() // 3600) * max(1, max_pdfs)) % max(1, len(materials))
+    pdf_rows = materials[rotation:] + materials[:rotation]
+    for row in pdf_rows:
         url = str(row.get("pdf_url") or "").strip()
         if not url:
             errors.append({"id": str(row.get("id") or ""), "reason": "no PDF URL"})
