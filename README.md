@@ -97,9 +97,16 @@ automatically authorize this GitHub worker.
    Platform / OAuth consent for your Google account. Create a **Desktop app**
    OAuth client and authorize the narrow **drive.file** scope:
    https://www.googleapis.com/auth/drive.file
-2. On your own device, use a trusted installed-app OAuth flow with offline
-   access and explicit consent to obtain a refresh token. If the app is
-   External and stays in Testing, refresh tokens can expire in seven days.
+2. On your own computer, download the Desktop OAuth client JSON from your
+   Google Cloud project. Then run the local helper (never in GitHub Actions):
+
+       python -m pip install google-auth-oauthlib
+       python scripts/setup_drive_oauth.py /path/to/client_secret.json
+
+   Sign in to the Google account with your Drive storage. The helper prints
+   the three GitHub secret values privately in your local terminal. Do not
+   upload the client JSON or terminal output. If the OAuth app is External
+   and stays in Testing, refresh tokens can expire in seven days.
 3. In the GitHub repository, open **Settings → Secrets and variables → Actions**
    and add these three private repository secrets:
    - **GDRIVE_BACKUP_CLIENT_ID**
