@@ -141,3 +141,43 @@ manually until a separate website fallback/restore service is built.
 Never add OAuth tokens, school credentials, or private backup files to the
 public GitHub repository or public URLs. Run offline regression tests with
 **python -m unittest discover -v**.
+
+## Mandatory Google Drive-first worker mode (2026-10)
+
+The EduSecure worker now has a **strict initial bootstrap** step, before any
+school messages are processed. It authenticates Google Drive, creates/finds
+the **private 8aPDF_Backup** root folder, creates **PDFs/** and
+**daily_snapshots/**, exports the complete current Supabase
+**study_materials** and **announcements** records into two JSON files,
+and attempts **all** existing original PDFs (up to 100 attempts in the initial
+pass). The normal five-hour worker **does not start** unless the bootstrap
+reports status **complete**. The snapshot may exist while original PDFs
+are still incomplete: this is **partial**, not success. Protected/inaccessible
+source PDFs can require separate recovery; do not claim that 5 TB storage
+by itself solves source-download permissions.
+
+Once bootstrapped, the worker sets **DRIVE_FIRST_REQUIRED=1**.
+For **new PDFs**, it must save verified PDF bytes into private
+**PDFs/<source-url-sha256>.pdf**, then a durable
+**pending_materials/<id>.json** with complete record metadata, and only
+after Drive confirms both uploads can it call the Supabase insert.
+For **new announcements**, it first writes
+**pending_announcements/<id>.json**, then publishes to Supabase.
+On Drive authentication failure, quota errors or inaccessible PDF bytes,
+the corresponding Supabase write is **deferred**; the next scanner cycle
+can retry. Existing Supabase records remain untouched and the website
+still reads Supabase. Hourly full snapshots subsequently include
+all successful edits and publications, including admin-panel updates.
+
+This mode is intentionally **fail-closed**. Missing or invalid
+GDRIVE_BACKUP_OAUTH_JSON credentials, incomplete original-PDF
+backfill, and other initial backup errors prevent the new worker from
+starting. Check the **Bootstrap complete Google Drive backup BEFORE live
+EduSecure sync** step and the **drive_backup_report.json** artifact.
+Do NOT paste OAuth credentials into issues, chat or source files.
+
+For an existing manually selected folder, GDRIVE_BACKUP_FOLDER_ID overrides
+creation. **Leave it unset** if you want the automation itself to create
+8aPDF_Backup in the OAuth account's My Drive. Unlike the older mode,
+a successful primary Supabase insert without a verified Google Drive
+copy is not permitted for newly discovered PDFs.
