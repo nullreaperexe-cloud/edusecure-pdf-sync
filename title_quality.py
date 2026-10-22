@@ -87,6 +87,11 @@ def supported_by_evidence(candidate: str, evidence: Any) -> bool:
                 return False
             if len(rewritten_words - original_words) > 1:
                 return False
+            # On longer Hindi/Punjabi messages a short AI paraphrase can drop
+            # the actual poem/lesson/person name while retaining generic words.
+            # Fail closed instead of silently deleting that information.
+            if len(original_words) > 4 and len(original_words & rewritten_words) * 5 < len(original_words) * 3:
+                return False
     if re.search(r"[\u0900-\u097f\u0a00-\u0a7f]", cand):
         return True
     source_nums = set(re.findall(r"\b\d+(?:\.\d+)*\b", source))
