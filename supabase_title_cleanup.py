@@ -29,7 +29,8 @@ def choose_title(record: dict, allow_ai: bool) -> tuple[str, bool]:
         return original, False
     used_ai = False
     result = local
-    if allow_ai and openrouter_title.OPENROUTER_API_KEY and ai_candidate_needed(original, local):
+    # Preserve native-script lesson names; free models sometimes translate away critical names.
+    if allow_ai and not re.search(r"[\u0900-\u097f\u0a00-\u0a7f]", original) and openrouter_title.OPENROUTER_API_KEY and ai_candidate_needed(original, local):
         # Stored title/description are the ONLY historical evidence available.
         # Do not claim verification against PDF contents that were not extracted.
         evidence = [original]
