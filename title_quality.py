@@ -23,6 +23,31 @@ def polish_title(value: Any, subject: Any = "") -> str:
         return title
     if re.search(r"[\u0900-\u097f\u0a00-\u0a7f]", title):
         return title
+    # PDF-specific teacher-message templates observed in live 8aPDF records.
+    # Extract documented topics without inventing chapter content.
+    worksheet_key = re.match(
+        r"^find\s+(?:the\s+)?attached\s+answer\s+key\s+of\s+worksheet\s+on\s+"
+        r"(.+?)(?:\.\s*reminder\s*:.*)?$", title, flags=re.I,
+    )
+    if worksheet_key:
+        title = worksheet_key.group(1).strip(" .") + " Worksheet Answer Key"
+    title = re.sub(
+        r"^question\s+answers\s+of\s+chapter\s+(\d+(?:\.\d+)*)\s+were\s+done\b.*$",
+        r"Chapter \1 Question Answers", title, flags=re.I,
+    )
+    worksheet_practice = re.match(
+        r"^practice\s+(?:the\s+)?worksheet\s+of\s+(?:(?:Mathematics|Maths)\s+)?"
+        r"(?:chapter\s+)?(.+?)\s+in\s+(?:a\s+)?separate\s+notebook\b.*$",
+        title, flags=re.I,
+    )
+    if worksheet_practice:
+        title = worksheet_practice.group(1).strip(" .") + " Worksheet"
+    bring_books = re.match(
+        r"^bring\s+(.+?)\s+tomorrow\.\s+also\s*-\s*find\s+attached\s+the\s+pdf\b",
+        title, flags=re.I,
+    )
+    if bring_books:
+        title = bring_books.group(1).strip(" .")
     title = re.sub(
         r"^(?:please\s+)?(?:find|refer\s+to|see|check)\s+(?:the\s+)?"
         r"(?:attached\s+)?(?:pdf|document|file|attachment)\s*"
