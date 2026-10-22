@@ -33,6 +33,32 @@ class TitleQualityTests(unittest.TestCase):
             "English Grammar Worksheet",
         ))
 
+    def test_live_teacher_message_templates(self):
+        cases = [
+            ("find the attached Answer Key of Worksheet on Fractions in Disguise. Reminder:Test of Chapter 1",
+             "Fractions in Disguise Worksheet Answer Key"),
+            ("Question answers of chapter 12 were done (PDF attached)",
+             "Chapter 12 Question Answers"),
+            ("practice the worksheet of Mathematics Chapter Fraction in Disguise in a separate notebook. Maths",
+             "Fraction in Disguise Worksheet"),
+            ("bring English literature book and notebook tomorrow. Also - find attached the PDF",
+             "English literature book and notebook"),
+        ]
+        for before, after in cases:
+            with self.subTest(before=before):
+                self.assertEqual(quality.polish_title(before), after)
+                self.assertTrue(quality.supported_by_evidence(after, before))
+
+    def test_never_translate_hindi_or_punjabi_title_into_english(self):
+        self.assertFalse(quality.supported_by_evidence(
+            "Class Revision: Lesson Tomorrow",
+            'प्रिय छात्रों कक्षा पुनरावृत्ति "मत बांधो" पाठ का कल',
+        ))
+        self.assertFalse(quality.supported_by_evidence(
+            "Lesson Summary and Character Study",
+            "ਪਾਠ ਮਾਂ ਦਾ ਸਾਰ ਰਾਵਤ ਦਾ ਪਾਤਰ ਚਿਤਰਨ",
+        ))
+
     def test_grounded_title_is_allowed(self):
         self.assertTrue(quality.supported_by_evidence(
             "Fractions in Disguise Worksheet",
