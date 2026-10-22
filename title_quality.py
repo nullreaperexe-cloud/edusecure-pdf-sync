@@ -50,8 +50,20 @@ def supported_by_evidence(candidate: str, evidence: Any) -> bool:
     cand = str(candidate or "").strip()
     if not cand or not source or len(cand) > 120:
         return False
+    # Never translate Hindi/Punjabi into English or erase named lesson words.
+    # Require strong native-script token overlap; grammar cannot change the topic.
+    for script in (r"[\u0900-\u097f]+", r"[\u0a00-\u0a7f]+"):
+        original_words = set(re.findall(script, source))
+        if original_words:
+            rewritten_words = set(re.findall(script, cand))
+            if not rewritten_words or len(original_words & rewritten_words) < max(
+                1, (len(rewritten_words) * 3 + 3) // 4
+            ):
+                return False
+            if len(rewritten_words - original_words) > 1:
+                return False
     if re.search(r"[\u0900-\u097f\u0a00-\u0a7f]", cand):
-        return bool(re.search(r"[\u0900-\u097f\u0a00-\u0a7f]", source))
+        return True
     source_nums = set(re.findall(r"\b\d+(?:\.\d+)*\b", source))
     candidate_nums = set(re.findall(r"\b\d+(?:\.\d+)*\b", cand))
     if not candidate_nums.issubset(source_nums):
