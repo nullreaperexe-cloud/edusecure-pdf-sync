@@ -19,6 +19,7 @@ on:
       - "test_drive_first.py"
       - "test_drive_backup.py"
       - "test_worker_loop.py"
+      - "test_reconciliation.py"
       - "supabase_gateway.py"
       - "supabase_materials.py"
       - "supabase_announcements.py"
@@ -138,6 +139,9 @@ jobs:
           WORKER_DURATION_MINUTES: "300"
           WORKER_INTERVAL_SECONDS: "300"
           WORKER_CYCLE_TIMEOUT_SECONDS: "1080"
+          # First check of each worker, then every 24 cycles (about 2h):
+          # re-scan all EduSecure history; Supabase URL/ID dedup is authoritative.
+          EDUSECURE_RECONCILIATION_EVERY_CYCLES: "24"
           GDRIVE_BACKUP_INTERVAL_SECONDS: "3600"
           GDRIVE_BACKUP_TIMEOUT_SECONDS: "240"
           GDRIVE_BACKUP_OAUTH_JSON: ${{ secrets.GDRIVE_BACKUP_OAUTH_JSON }}

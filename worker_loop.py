@@ -31,11 +31,15 @@ def now_iso():
     return datetime.now(timezone.utc).isoformat()
 
 
-def run_cycle(timeout_seconds=1080, command=None):
-    """One *non-overlapping* EduSecure sync attempt with bounded runtime."""
+def run_cycle(timeout_seconds=1080, command=None, *, full_reconciliation=False):
+    """One EduSecure cycle: full source/Supabase reconciliation when selected."""
     argv=command or [sys.executable,"sync_repair.py"]
     try:
-        process=subprocess.run(argv,timeout=timeout_seconds,check=False)
+        options = (
+            {"env": {**os.environ, "EDUSECURE_FULL_RECONCILIATION": "1"}}
+            if full_reconciliation else {}
+        )
+        process=subprocess.run(argv,timeout=timeout_seconds,check=False,**options)
         return int(process.returncode)
     except subprocess.TimeoutExpired:
         print(f"EduSecure cycle exceeded {timeout_seconds}s, moving to next check.",flush=True)
@@ -71,13 +75,15 @@ def worker(duration_seconds=18000,interval_seconds=300,timeout_seconds=1080,
     last_backup_started=None
     backup_interval=max(300, int(os.getenv("GDRIVE_BACKUP_INTERVAL_SECONDS","3600")))
     backup_retry_interval=max(300, int(os.getenv("GDRIVE_BACKUP_RETRY_SECONDS","300")))
+    reconciliation_every=max(1, int(os.getenv("EDUSECURE_RECONCILIATION_EVERY_CYCLES","24")))
     last_backup_rc=None
     backup_timeout=max(60, int(os.getenv("GDRIVE_BACKUP_TIMEOUT_SECONDS","240")))
     summary={"started_at":now_iso(),"planned_minutes":round(duration_seconds/60,2),
              "check_interval_seconds":interval_seconds,"checks":0,
              "successful":0,"failed":0,"timed_out":0,"last_exit_code":None,
              "last_run_at":None,"check_log":[],
-             "drive_backup_checks":0,"drive_backup_failures":0,"last_drive_backup_at":None}
+             "drive_backup_checks":0,"drive_backup_failures":0,"last_drive_backup_at":None,
+             "full_reconciliation_attempts":0,"last_full_reconciliation_at":None}
     print(f"Starting {duration_seconds/3600:.2f}h 8aPDF worker; "+
           f"checking EduSecure every {interval_seconds}s.",flush=True)
     try:
@@ -92,7 +98,12 @@ def worker(duration_seconds=18000,interval_seconds=300,timeout_seconds=1080,
             n=summary["checks"]+1
             checked=now_iso()
             print(f"====== EduSecure / Supabase check #{n} at {checked} ======",flush=True)
-            rc=run_cycle(timeout_seconds,command)
+            full_reconciliation=(summary["checks"] % reconciliation_every == 0)
+            if full_reconciliation:
+                summary["full_reconciliation_attempts"]+=1
+                summary["last_full_reconciliation_at"]=checked
+                print("Checking all EduSecure history against Supabase before Drive backup.",flush=True)
+            rc=run_cycle(timeout_seconds,command,full_reconciliation=full_reconciliation)
             # Initial Google Drive backup runs after the first sync cycle;
             # successful backups recur hourly, while failures retry every five
             # minutes without ever blocking primary EduSecure/Supabase sync.

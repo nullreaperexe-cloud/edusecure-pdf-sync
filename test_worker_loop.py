@@ -55,6 +55,31 @@ class WorkerLoopTests(unittest.TestCase):
             self.assertEqual(summary["successful"],1)
             self.assertEqual(summary["drive_backup_failures"],1)
 
+    def test_full_reconciliation_passes_environment_only_to_selected_cycle(self):
+        with patch.object(w.subprocess,"run",return_value=Mock(returncode=0)) as invoke:
+            self.assertEqual(w.run_cycle(10, ["python", "sync_repair.py"],
+                                         full_reconciliation=True),0)
+            env=invoke.call_args.kwargs["env"]
+            self.assertEqual(env["EDUSECURE_FULL_RECONCILIATION"],"1")
+        with patch.object(w.subprocess,"run",return_value=Mock(returncode=0)) as invoke:
+            self.assertEqual(w.run_cycle(10, ["python", "sync_repair.py"]),0)
+            self.assertNotIn("env",invoke.call_args.kwargs)
+
+    def test_first_worker_cycle_audits_full_history(self):
+        with tempfile.TemporaryDirectory() as folder:
+            with (patch.object(w,"SUMMARY",Path(folder)/"worker.json"),
+                  patch.object(w,"STOP",False),
+                  patch.dict(w.os.environ,{"EDUSECURE_RECONCILIATION_EVERY_CYCLES":"24"}),
+                  patch.object(w,"run_cycle",return_value=0) as run,
+                  patch.object(w,"run_drive_backup",return_value=0)):
+                self.assertEqual(w.worker(duration_seconds=10,interval_seconds=0.002,
+                                          timeout_seconds=5,max_cycles=2),0)
+                summary=json.loads((Path(folder)/"worker.json").read_text())
+            self.assertEqual(run.call_count,2)
+            self.assertTrue(run.call_args_list[0].kwargs["full_reconciliation"])
+            self.assertFalse(run.call_args_list[1].kwargs["full_reconciliation"])
+            self.assertEqual(summary["full_reconciliation_attempts"],1)
+
     def test_timeout_is_not_retried_in_the_same_cycle(self):
         with patch.object(w.subprocess,"run",side_effect=subprocess.TimeoutExpired("python",5)) as run:
             self.assertEqual(w.run_cycle(5,["python","sync_repair.py"]),124)

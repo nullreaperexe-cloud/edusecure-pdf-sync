@@ -174,3 +174,24 @@ Do not restore the removed pre-publication Drive calls in
 Create the GitHub Actions repository secret `GROQ_API_KEY`. All active AI title/grammar/announcement paths use Groq exclusively. The code queries `https://api.groq.com/openai/v1/models` and chooses available text models automatically. Never set the literal Groq model ID `auto`; the API requires a real model identifier. The former API provider secret can be deleted.
 
 If `drive_backup_report.json` shows `oauth_error: invalid_grant`, the Google Drive OAuth refresh token is invalid, revoked or expired. Do not keep retrying that token. Re-authorize the Google Drive account with the same OAuth client and offline consent (Google OAuth Playground, as documented above); update the `refresh_token` field inside the existing GitHub Actions `GDRIVE_BACKUP_OAUTH_JSON` secret. Never post tokens publicly. After re-authorization, an hourly backup automatically retries while the EduSecure/Supabase primary sync continues independently.
+
+
+## Source → Supabase → Drive full reconciliation
+
+Every EduSecure cycle first retrieves authoritative Supabase PDF URLs and
+announcement source IDs, then checks the source cards. Missing PDFs are inserted
+under a deterministic canonical-URL-derived ID; announcements use deterministic
+source-message IDs. Existing records are skipped, never republished. After each
+sync cycle the worker reads both Supabase inventories and verifies Drive JSON
+snapshots and PDF files by exact filename/content hash, copying only missing
+ones. A failed backup does not block Supabase.
+
+Every fresh 5-hour worker begins with **full-history reconciliation** rather
+than restricting the source scan to the usual PDF 21-day / announcement 7-day
+lookbacks. Another full scan runs every 24 cycles (about two hours), configurable
+with `EDUSECURE_RECONCILIATION_EVERY_CYCLES`. Other checks still run on the
+five-minute cadence with bounded recent windows. Full scans also respect the
+per-cycle PDF upload cap and time limit. A run reports whether it actually
+reached the bottom of EduSecure history; an incomplete scan is never presented
+as complete. A missed older source item will be attempted again on later
+full-history scans without creating duplicates.

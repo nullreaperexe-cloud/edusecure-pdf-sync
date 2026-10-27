@@ -48,6 +48,27 @@ def normalize_subject_name(value: Any) -> str:
     return intelligence.normalize_subject(value)
 
 
+def eligible_for_recovery(
+    msg_date: Optional[date], *,
+    pdf_cutoff: date,
+    announcement_cutoff: date,
+    known_pdf_history: bool,
+    full_history: bool = False,
+) -> tuple[bool, bool]:
+    """Reconcile source messages against Supabase, never by date alone.
+
+    Ordinary checks use bounded recovery windows for speed; periodic complete
+    audits must revisit ALL dated PDFs and all non-PDF messages. Exact PDF URL
+    and deterministic announcement ID checks still decide whether to insert.
+    """
+    if full_history:
+        return msg_date is not None, True
+    if msg_date is None:
+        return False, True
+    pdf_ok = not (msg_date < pdf_cutoff if known_pdf_history else msg_date <= pdf_cutoff)
+    return pdf_ok, msg_date >= announcement_cutoff
+
+
 def parse_date_text(text: str) -> Optional[date]:
     text = clean(text)
     patterns = [
@@ -378,24 +399,29 @@ def main() -> int:
         return 2
 
     existing_urls, latest_date, next_order = existing_state(materials)
+    full_history = os.environ.get("EDUSECURE_FULL_RECONCILIATION", "0") == "1"
     safe_cutoff = TODAY - timedelta(days=1)
-    # Revisit recent PDFs even when a newer card exists: exact URLs prevent duplicates.
-    recovery_floor = TODAY - timedelta(days=int(os.environ.get('PDF_RECOVERY_DAYS', '21')))
+    recovery_floor = TODAY - timedelta(days=int(os.environ.get("PDF_RECOVERY_DAYS", "21")))
     cutoff = min(latest_date or safe_cutoff, recovery_floor)
+    announcement_cutoff = TODAY - timedelta(days=int(os.environ.get("ANNOUNCEMENT_RECOVERY_DAYS", "7")))
     if latest_date:
         print(f"Latest existing PDF source date: {latest_date.isoformat()}")
     else:
         print(f"No readable existing PDF date; safe cutoff retained: {safe_cutoff.isoformat()}")
-    print(f"Existing PDF URLs loaded: {len(existing_urls)}")
-
-    announcement_cutoff = TODAY - timedelta(days=int(os.environ.get("ANNOUNCEMENT_RECOVERY_DAYS", "7")))
-    print(
-        "Announcement recovery scan uses deterministic Supabase document IDs; "
-        f"messages from {announcement_cutoff.isoformat()} onward remain eligible."
-    )
+    print(f"Existing PDF URLs loaded from Supabase: {len(existing_urls)}")
+    if full_history:
+        print("FULL HISTORY RECONCILIATION: scan all available EduSecure messages, "
+              "regardless of age; publish ONLY missing Supabase PDF URLs / announcement IDs.")
+    else:
+        print(f"Normal PDF lookback starts {cutoff.isoformat()}; "
+              f"announcement lookback starts {announcement_cutoff.isoformat()}.")
+    print("After Supabase publication, worker verifies Drive snapshots and missing PDFs.")
 
     report: Dict[str, Any] = {
         "cutoff": cutoff.isoformat(),
+        "reconciliation_mode": "full_history" if full_history else "recent",
+        "source_messages_examined": 0,
+        "dashboard_bottom_confirmed": False,
         "existing_count": len(existing_urls),
         "messages_opened": 0,
         "newer_messages_seen": 0,
@@ -448,10 +474,12 @@ def main() -> int:
                 else:
                     bottom_confirmations = 0
                 if bottom_confirmations >= 5:
+                    report["dashboard_bottom_confirmed"] = True
                     break
                 continue
 
             message = visible[0]
+            report["source_messages_examined"] += 1
             message_text = clean(message.get("text"))
             fp = message.get("fp") or legacy.fingerprint(message_text)
             if fp:
@@ -459,18 +487,16 @@ def main() -> int:
 
             msg_date = legacy.extract_message_date(message_text)
 
-            # PDF and Announcement freshness are intentionally separate.
-            # Undated messages can still become Announcements; undated PDFs are
-            # not uploaded because the PDF library requires a source date.
+            # Normal cycles use date windows; full audits bypass those windows
+            # but still check Supabase identities and never duplicate records.
+            pdf_date_eligible, announcement_date_eligible = eligible_for_recovery(
+                msg_date, pdf_cutoff=cutoff,
+                announcement_cutoff=announcement_cutoff,
+                known_pdf_history=bool(latest_date),
+                full_history=full_history,
+            )
             if msg_date is None:
-                pdf_date_eligible = False
-                announcement_date_eligible = True
-                print("Undated EduSecure message -> announcement-eligible")
-            else:
-                pdf_date_eligible = not (
-                    msg_date < cutoff if latest_date else msg_date <= cutoff
-                )
-                announcement_date_eligible = msg_date >= announcement_cutoff
+                print("Undated EduSecure message -> announcement-eligible only")
 
             if msg_date is not None and not pdf_date_eligible and not announcement_date_eligible:
                 old_confirmations += 1
@@ -641,6 +667,9 @@ def main() -> int:
         report["status"] = "failed" if report["failures"] else "deferred" if report["announcement_ai_retries"] else "completed"
         save_report(report)
         print("\n=== SYNC COMPLETE ===")
+        print(f"Reconciliation mode: {report['reconciliation_mode']}")
+        print(f"Messages examined: {report['source_messages_examined']}")
+        print(f"Dashboard history bottom reached: {report['dashboard_bottom_confirmed']}")
         print(f"Newer messages seen: {report['newer_messages_seen']}")
         print(f"Messages opened: {report['messages_opened']}")
         print(f"Attachments found: {report['attachments_found']}")
