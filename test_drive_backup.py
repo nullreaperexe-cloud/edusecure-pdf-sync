@@ -115,6 +115,46 @@ class BackupTests(unittest.TestCase):
             row = next(data for _, name, data, _ in drive.files if name == "announcements.json")
             self.assertEqual(json.loads(row)["records"], announcements)
 
+    def test_existing_drive_pdf_is_skipped_without_download_or_duplicate(self):
+        url = "https://edusecure.org/already-present.pdf"
+        filename = backup.hashlib.sha256(url.encode("utf-8")).hexdigest() + ".pdf"
+
+        class FakeDrive:
+            def __init__(self):
+                self.uploads = []
+            def folder(self, parent, name):
+                return "folder_" + name
+            def list(self, parent, name=None):
+                if parent == "folder_PDFs":
+                    return [{"name": filename, "id": "existing-pdf", "mimeType": "application/pdf"}]
+                return []
+            def put(self, parent, name, data, mime_type, index):
+                self.uploads.append((parent, name))
+                return "json-" + name, True
+
+        fake = FakeDrive()
+        with tempfile.TemporaryDirectory() as d:
+            with (patch.object(backup, "STATUS", Path(d) / "status.json"),
+                  patch.dict(os.environ, {
+                      "GDRIVE_BACKUP_OAUTH_JSON": json.dumps({
+                          "client_id": "fake", "client_secret": "fake",
+                          "refresh_token": "fake",
+                      }),
+                      "GDRIVE_BACKUP_FOLDER_ID": "",
+                  }),
+                  patch.object(backup, "Drive", return_value=fake),
+                  patch.object(backup, "read_inventory", side_effect=[
+                      [{"id": "existing", "pdf_url": url}],
+                      [{"id": "announcement", "title": "Already in Supabase"}],
+                  ]),
+                  patch.object(backup, "fetch_pdf") as fetch):
+                self.assertEqual(backup.backup(), 0)
+                report = json.loads((Path(d) / "status.json").read_text())
+            fetch.assert_not_called()
+            self.assertEqual(report["pdfs_already_present"], 1)
+            self.assertEqual(report["pdfs_copied"], 0)
+            self.assertFalse(any(name == filename for _, name in fake.uploads))
+
     def test_oauth_refresh_failure_reports_safe_google_code_without_secret(self):
         secret = "PRIVATE_REFRESH_TOKEN_MUST_NOT_APPEAR"
         class FailedResponse:

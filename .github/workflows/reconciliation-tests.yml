@@ -1,0 +1,41 @@
+name: EduSecure Reconciliation Regression Tests
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - "runner.py"
+      - "worker_loop.py"
+      - "drive_backup.py"
+      - "test_reconciliation.py"
+      - "test_worker_loop.py"
+      - "test_drive_backup.py"
+      - ".github/workflows/reconciliation-tests.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  reconciliation-tests:
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v7
+
+      - name: Set up Python
+        uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install dependencies
+        run: python -m pip install -r requirements.txt
+
+      - name: Compile reconciliation and upload logic
+        run: python -m py_compile runner.py sync_repair.py worker_loop.py drive_backup.py supabase_materials.py supabase_announcements.py
+
+      - name: Prove missing record eligibility and no duplicate uploads
+        run: |
+          python -m unittest -v test_reconciliation.py test_worker_loop.py test_drive_backup.py test_supabase_materials.py test_supabase_announcements.py
