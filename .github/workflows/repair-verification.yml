@@ -38,13 +38,9 @@ jobs:
           python -m py_compile runner.py sync.py sync_repair.py announcement_processor.py groq_title.py
           python -m unittest -v test_title_intelligence.py test_announcements.py
 
-      - name: Run one real EduSecure sync
-        env:
-          PYTHONUNBUFFERED: "1"
-          EDUSECURE_USERNAME: ${{ secrets.EDUSECURE_USERNAME }}
-          EDUSECURE_PASSWORD: ${{ secrets.EDUSECURE_PASSWORD }}
-          FIREBASE_ADMIN_EMAIL: ${{ secrets.FIREBASE_ADMIN_EMAIL || vars.FIREBASE_ADMIN_EMAIL }}
-          FIREBASE_ADMIN_PASSWORD: ${{ secrets.FIREBASE_ADMIN_PASSWORD }}
-          GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
-          ANNOUNCEMENT_RECOVERY_DAYS: "7"
-        run: python sync_repair.py
+      # Supabase's GitHub OIDC trust policy intentionally authorizes only
+      # sync.yml for live writes. Running sync_repair.py here would get 401.
+      # Verify this workflow's code offline; the live sync.yml job validates
+      # Supabase read/write and runs the real school worker independently.
+      - name: Confirm integration verification location
+        run: echo "Code checks passed. Live integration is checked by EduSecure PDF Sync (sync.yml)."
