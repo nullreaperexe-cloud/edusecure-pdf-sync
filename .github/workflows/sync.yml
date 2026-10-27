@@ -142,7 +142,7 @@ jobs:
           # First check of each worker, then every 24 cycles (about 2h):
           # re-scan all EduSecure history; Supabase URL/ID dedup is authoritative.
           EDUSECURE_RECONCILIATION_EVERY_CYCLES: "24"
-          GDRIVE_BACKUP_INTERVAL_SECONDS: "3600"
+          GDRIVE_BACKUP_INTERVAL_SECONDS: "300" # verify Drive after each normal 5-minute cycle
           GDRIVE_BACKUP_TIMEOUT_SECONDS: "240"
           GDRIVE_BACKUP_OAUTH_JSON: ${{ secrets.GDRIVE_BACKUP_OAUTH_JSON }}
           GDRIVE_BACKUP_CLIENT_ID: ${{ secrets.GDRIVE_BACKUP_CLIENT_ID }}

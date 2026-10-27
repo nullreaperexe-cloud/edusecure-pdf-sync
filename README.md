@@ -195,3 +195,5 @@ per-cycle PDF upload cap and time limit. A run reports whether it actually
 reached the bottom of EduSecure history; an incomplete scan is never presented
 as complete. A missed older source item will be attempted again on later
 full-history scans without creating duplicates.
+
+**Drive verification cadence:** The live GitHub workflow now sets `GDRIVE_BACKUP_INTERVAL_SECONDS=300`. Every five-minute cycle reads and de-duplicates source records against Supabase first, then the worker checks Drive's inventories/filenames. Existing PDFs are not copied again; JSON snapshots update only if changed, and the audit manifest is updated in place. Backup errors never create duplicate Supabase uploads.

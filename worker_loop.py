@@ -73,7 +73,7 @@ def worker(duration_seconds=18000,interval_seconds=300,timeout_seconds=1080,
     deadline=started+duration_seconds
     next_tick=started
     last_backup_started=None
-    backup_interval=max(300, int(os.getenv("GDRIVE_BACKUP_INTERVAL_SECONDS","3600")))
+    backup_interval=max(300, int(os.getenv("GDRIVE_BACKUP_INTERVAL_SECONDS","300")))
     backup_retry_interval=max(300, int(os.getenv("GDRIVE_BACKUP_RETRY_SECONDS","300")))
     reconciliation_every=max(1, int(os.getenv("EDUSECURE_RECONCILIATION_EVERY_CYCLES","24")))
     last_backup_rc=None
@@ -104,9 +104,9 @@ def worker(duration_seconds=18000,interval_seconds=300,timeout_seconds=1080,
                 summary["last_full_reconciliation_at"]=checked
                 print("Checking all EduSecure history against Supabase before Drive backup.",flush=True)
             rc=run_cycle(timeout_seconds,command,full_reconciliation=full_reconciliation)
-            # Initial Google Drive backup runs after the first sync cycle;
-            # successful backups recur hourly, while failures retry every five
-            # minutes without ever blocking primary EduSecure/Supabase sync.
+            # Verify Drive after every five-minute Supabase reconciliation,
+            # not just once per hour. Failed backups are retried, while all
+            # Drive operations remain isolated from the source/Supabase sync.
             due_after=backup_retry_interval if last_backup_rc not in (None, 0) else backup_interval
             if last_backup_started is None or time.monotonic()-last_backup_started>=due_after:
                 last_backup_started=time.monotonic()
