@@ -39,7 +39,27 @@ jobs:
 
           missing = drive_backup.configuration()
           if missing:
-              print("::error::Google Drive backup credentials missing or invalid. Check the secret names and JSON object.")
+              import json
+              raw = os.getenv("GDRIVE_BACKUP_OAUTH_JSON", "").strip()
+              if raw:
+                  try:
+                      value = json.loads(raw)
+                  except (ValueError, TypeError):
+                      print("::error::GDRIVE_BACKUP_OAUTH_JSON must contain a JSON object, not a raw refresh token or copied plain text.")
+                      raise SystemExit(1)
+                  if not isinstance(value, dict):
+                      print("::error::GDRIVE_BACKUP_OAUTH_JSON must be a JSON object.")
+                      raise SystemExit(1)
+                  client = value.get("web") or value.get("installed") or value
+                  if not isinstance(client, dict):
+                      print("::error::Invalid nested OAuth client object.")
+                      raise SystemExit(1)
+                  absent = [k for k in ("client_id", "client_secret") if not isinstance(client.get(k), str) or not client.get(k).strip()]
+                  if not isinstance(value.get("refresh_token"), str) or not value.get("refresh_token").strip():
+                      absent.append("refresh_token")
+                  print("::error::Incomplete Google OAuth JSON; required field names missing or blank: " + ", ".join(absent))
+              else:
+                  print("::error::Google OAuth credentials were not configured in the expected GitHub Actions secrets.")
               raise SystemExit(1)
           print("Backup credential format: valid (values hidden).")
           try:
