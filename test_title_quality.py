@@ -2,7 +2,7 @@ import json
 import unittest
 from unittest.mock import Mock, patch
 
-import openrouter_title as title_ai
+import groq_title as title_ai
 import title_quality as quality
 import supabase_title_cleanup as historical
 
@@ -65,13 +65,13 @@ class TitleQualityTests(unittest.TestCase):
             "practice the worksheet of Mathematics Chapter Fraction in Disguise",
         ))
 
-    def test_openrouter_free_json_generates_short_grounded_title(self):
+    def test_groq_auto_json_generates_short_grounded_title(self):
         response = Mock(status_code=200, ok=True)
         response.json.return_value = {
-            "model": "openrouter/free",
+            "model": "llama-3.3-70b-versatile",
             "choices": [{"message": {"content": '{"title":"Chapter 12 Question Answers"}'}}],
         }
-        with patch.object(title_ai, "OPENROUTER_API_KEY", "test-placeholder"):
+        with (patch.object(title_ai, "GROQ_API_KEY", "test-placeholder"), patch.object(title_ai, "_MODEL_CACHE", ("llama-3.3-70b-versatile",))):
             with patch.object(title_ai.requests, "post", return_value=response) as send:
                 got = title_ai.generate_title(
                     "Question answers of chapter 12 were done (PDF attached)",
@@ -80,13 +80,13 @@ class TitleQualityTests(unittest.TestCase):
                 )
         self.assertEqual(got, "Chapter 12 Question Answers")
         self.assertEqual(send.call_count, 1)
-        self.assertEqual(send.call_args.kwargs["json"]["model"], "openrouter/free")
+        self.assertEqual(send.call_args.kwargs["json"]["model"], "llama-3.3-70b-versatile")
         self.assertEqual(send.call_args.kwargs["json"]["response_format"], {"type": "json_object"})
 
-    def test_invalid_unrelated_openrouter_title_uses_local_fallback(self):
+    def test_invalid_unrelated_groq_title_uses_local_fallback(self):
         response = Mock(status_code=200, ok=True)
         response.json.return_value = {"choices": [{"message": {"content": '{"title":"Chess Championship"}'}}]}
-        with patch.object(title_ai, "OPENROUTER_API_KEY", "test-placeholder"):
+        with (patch.object(title_ai, "GROQ_API_KEY", "test-placeholder"), patch.object(title_ai, "_MODEL_CACHE", ("llama-3.3-70b-versatile",))):
             with patch.object(title_ai.requests, "post", return_value=response):
                 got = title_ai.generate_title(
                     "notes of chapter 6",
@@ -97,13 +97,58 @@ class TitleQualityTests(unittest.TestCase):
 
     def test_429_quota_exceeded_does_not_retry(self):
         response = Mock(status_code=429, ok=False)
-        with patch.object(title_ai, "OPENROUTER_API_KEY", "test-placeholder"):
+        with (patch.object(title_ai, "GROQ_API_KEY", "test-placeholder"), patch.object(title_ai, "_MODEL_CACHE", ("llama-3.3-70b-versatile",))):
             with patch.object(title_ai.requests, "post", return_value=response) as send:
                 got = title_ai.generate_title(
                     "notes of chapter 6", "Science", "notes of chapter 6"
                 )
         self.assertEqual(got, "Chapter 6 Notes")
         self.assertEqual(send.call_count, 1)
+
+    def test_groq_auto_models_discovers_text_models_only(self):
+        response = Mock(status_code=200, ok=True)
+        response.json.return_value = {"data": [
+            {"id": "whisper-large-v3"},
+            {"id": "llama-3.1-8b-instant"},
+            {"id": "openai/gpt-oss-20b"},
+        ]}
+        with (patch.object(title_ai, "GROQ_API_KEY", "test-key"),
+              patch.object(title_ai, "_MODEL_CACHE", None),
+              patch.object(title_ai.requests, "get", return_value=response) as get):
+            models = title_ai._auto_models()
+        self.assertEqual(models[0], "openai/gpt-oss-20b")
+        self.assertNotIn("whisper-large-v3", models)
+        self.assertEqual(get.call_count, 1)
+        self.assertEqual(get.call_args.args[0], title_ai.GROQ_MODELS_URL)
+        response.close.assert_called_once()
+
+    def test_groq_request_never_uses_literal_auto_or_legacy_provider(self):
+        response = Mock(status_code=200, ok=True)
+        response.json.return_value = {
+            "choices": [{"message": {"content": '{"title":"Chapter 12 Question Answers"}'}}]}
+        with (patch.object(title_ai, "GROQ_API_KEY", "test-key"),
+              patch.object(title_ai, "_MODEL_CACHE", ("llama-3.3-70b-versatile",)),
+              patch.object(title_ai.requests, "post", return_value=response) as send):
+            title_ai.generate_title("Chapter 12 Question Answers", "English", "Chapter 12 Question Answers")
+        self.assertEqual(send.call_args.args[0], title_ai.GROQ_CHAT_URL)
+        self.assertNotEqual(send.call_args.kwargs["json"]["model"], "auto")
+        self.assertEqual(send.call_args.kwargs["headers"]["Authorization"], "Bearer test-key")
+
+    def test_groq_announcement_classification_keeps_grammar_rules(self):
+        response = Mock(status_code=200, ok=True)
+        response.json.return_value = {"model": "llama-3.3-70b-versatile",
+            "choices": [{"message": {"content":
+            '{"title":"Computer Revision Test","category":"Tests","subject":"Computer","priority":"normal"}'
+            }}]}
+        with (patch.object(title_ai, "GROQ_API_KEY", "fake-key"),
+              patch.object(title_ai, "_MODEL_CACHE", ("llama-3.3-70b-versatile",)),
+              patch.object(title_ai.requests, "post", return_value=response) as send):
+            from announcement_processor import ALLOWED_CATEGORIES
+            result = title_ai.generate_announcement_metadata("Prepare for the Computer revision test", ALLOWED_CATEGORIES)
+        self.assertIsNotNone(result)
+        self.assertEqual(result["category"], "Tests")
+        self.assertEqual(result["aiModel"], "llama-3.3-70b-versatile")
+        self.assertEqual(send.call_args.args[0], title_ai.GROQ_CHAT_URL)
 
     def test_existing_title_cleanup_is_pure_without_ai(self):
         item = {

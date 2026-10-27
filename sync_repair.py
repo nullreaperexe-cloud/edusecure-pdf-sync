@@ -1492,7 +1492,7 @@ def list_supabase_materials_safely(id_token: str) -> List[Dict[str, Any]]:
 
 # Install all consolidated runtime repairs before main() starts.
 # Monkey-patching the shared title_cleaner sanitizer is intentional: it protects
-# OpenRouter output, semantic duplicate keys and the final Firestore safety gate.
+# Groq output, semantic duplicate keys and the final Firestore safety gate.
 runner.intelligence.sanitize_title = sanitize_title_with_grammar
 runner.list_firestore_materials = list_supabase_materials_safely
 runner.upload_firestore = upload_firestore_with_cache

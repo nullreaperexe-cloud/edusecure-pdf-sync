@@ -30,7 +30,7 @@ jobs:
 
       - name: Validate one-time reversal
         run: |
-          python -m py_compile one_time_reverse_announcements.py openrouter_title.py announcement_processor.py runner.py
+          python -m py_compile one_time_reverse_announcements.py groq_title.py announcement_processor.py runner.py
           python -m unittest -v test_announcements.py
 
       - name: Reverse existing announcements once

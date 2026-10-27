@@ -35,7 +35,7 @@ jobs:
 
       - name: Clean and audit existing EduSecure records
         env:
-          OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+          GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
           SUPABASE_URL: "https://xudhjwojgxblbsebkzso.supabase.co"
           TITLE_CLEANUP_MAX_AI_CALLS: "12"
           PYTHONUNBUFFERED: "1"

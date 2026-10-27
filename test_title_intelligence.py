@@ -1,7 +1,7 @@
 import unittest
 
 import title_cleaner as intelligence
-import openrouter_title as ai_title
+import groq_title as ai_title
 
 
 class TitleSubjectIntelligenceTests(unittest.TestCase):
@@ -87,9 +87,9 @@ class TitleSubjectIntelligenceTests(unittest.TestCase):
         )
 
     def test_ai_falls_back_cleanly_without_key(self):
-        previous = ai_title.OPENROUTER_API_KEY
+        previous = ai_title.GROQ_API_KEY
         try:
-            ai_title.OPENROUTER_API_KEY = ""
+            ai_title.GROQ_API_KEY = ""
             title = ai_title.generate_title(
                 ["Dear Students September 21, 2026 Mathematics Exercise 7.2 Correction"],
                 subject="Mathematics",
@@ -97,7 +97,7 @@ class TitleSubjectIntelligenceTests(unittest.TestCase):
             )
             self.assertEqual(title, "Exercise 7.2 Correction")
         finally:
-            ai_title.OPENROUTER_API_KEY = previous
+            ai_title.GROQ_API_KEY = previous
 
 
 if __name__ == "__main__":

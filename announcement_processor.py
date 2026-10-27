@@ -8,7 +8,7 @@ from typing import Any, Dict, Optional, Set, Tuple
 
 import requests
 
-import openrouter_title as ai_title
+import groq_title as ai_title
 import title_cleaner as intelligence
 
 FIREBASE_PROJECT_ID = intelligence.FIREBASE_PROJECT_ID
@@ -585,7 +585,7 @@ def build_announcement(
 ) -> Dict[str, Any]:
     """Every non-PDF EduSecure message becomes an announcement.
 
-    OpenRouter gets first chance to create title/category/subject/priority.
+    Groq gets first chance to create title/category/subject/priority.
     If AI is unavailable, publish a safe pending fallback instead of dropping
     the school message; the historical AI repair can refine it later.
     """
@@ -681,7 +681,7 @@ def claim_announcement(
     message_date: Optional[date],
     id_token: str,
 ) -> str:
-    """Atomically reserve a new message before spending an OpenRouter call."""
+    """Atomically reserve a new message before spending an Groq call."""
     if not source_id:
         return "failed"
 

@@ -16,7 +16,7 @@ from selenium.common.exceptions import WebDriverException
 
 import sync as legacy
 import title_cleaner as intelligence
-import openrouter_title as ai_title
+import groq_title as ai_title
 import supabase_announcements as announcements
 import supabase_materials as supabase_store
 import supabase_gateway
@@ -598,8 +598,8 @@ def main() -> int:
                 }
             )
 
-            # Generate the NEW material title with OpenRouter's free router only.
-            # If OpenRouter is unavailable/rate-limited, ai_title.generate_title()
+            # Generate the NEW material title with Groq's free router only.
+            # If Groq is unavailable/rate-limited, ai_title.generate_title()
             # returns the existing deterministic clean title so syncing continues.
             generated_title = ai_title.generate_title(
                 original_evidence,

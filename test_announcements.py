@@ -3,7 +3,7 @@ from datetime import date
 from unittest.mock import patch
 
 import announcement_processor as announcements
-import openrouter_title as ai_title
+import groq_title as ai_title
 
 
 class AnnouncementProcessorTests(unittest.TestCase):

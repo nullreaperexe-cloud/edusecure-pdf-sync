@@ -23,7 +23,7 @@ The Edge Function verifies issuer, audience, signature (GitHub JWKS), repository
 The active sync requires only these GitHub secrets:
 - `EDUSECURE_USERNAME`: actual EduSecure school login.
 - `EDUSECURE_PASSWORD`: EduSecure school password.
-- `OPENROUTER_API_KEY` (optional): AI-generated title refinement; deterministic safe fallback if unavailable.
+- `GROQ_API_KEY` (optional Actions secret): Groq AI handles PDF title grammar and announcement classification. A suitable text model is automatically selected from the available model catalogue; quota/unavailability preserves safe local fallback.
 
 **No `SUPABASE_SECRET_KEY`, `FIREBASE_ADMIN_PASSWORD` or Firebase user account is necessary for this sync.** Do not paste any private keys into GitHub source files or logs.
 
@@ -167,3 +167,10 @@ An initial full historical Drive copy is no longer a blocking preflight.
 `DRIVE_FIRST_REQUIRED` is obsolete and must not be set in the sync workflow.
 Do not restore the removed pre-publication Drive calls in
 `supabase_materials.upload_material` or `supabase_announcements.upload_announcement`.
+
+
+## Groq AI configuration and Drive OAuth recovery
+
+Create the GitHub Actions repository secret `GROQ_API_KEY`. All active AI title/grammar/announcement paths use Groq exclusively. The code queries `https://api.groq.com/openai/v1/models` and chooses available text models automatically. Never set the literal Groq model ID `auto`; the API requires a real model identifier. The former API provider secret can be deleted.
+
+If `drive_backup_report.json` shows `oauth_error: invalid_grant`, the Google Drive OAuth refresh token is invalid, revoked or expired. Do not keep retrying that token. Re-authorize the Google Drive account with the same OAuth client and offline consent (Google OAuth Playground, as documented above); update the `refresh_token` field inside the existing GitHub Actions `GDRIVE_BACKUP_OAUTH_JSON` secret. Never post tokens publicly. After re-authorization, an hourly backup automatically retries while the EduSecure/Supabase primary sync continues independently.

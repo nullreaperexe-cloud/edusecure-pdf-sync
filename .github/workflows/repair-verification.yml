@@ -34,7 +34,7 @@ jobs:
 
       - name: Validate automation
         run: |
-          python -m py_compile runner.py sync.py sync_repair.py announcement_processor.py openrouter_title.py
+          python -m py_compile runner.py sync.py sync_repair.py announcement_processor.py groq_title.py
           python -m unittest -v test_title_intelligence.py test_announcements.py
 
       - name: Run one real EduSecure sync
@@ -44,6 +44,6 @@ jobs:
           EDUSECURE_PASSWORD: ${{ secrets.EDUSECURE_PASSWORD }}
           FIREBASE_ADMIN_EMAIL: ${{ secrets.FIREBASE_ADMIN_EMAIL || vars.FIREBASE_ADMIN_EMAIL }}
           FIREBASE_ADMIN_PASSWORD: ${{ secrets.FIREBASE_ADMIN_PASSWORD }}
-          OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+          GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
           ANNOUNCEMENT_RECOVERY_DAYS: "7"
         run: python sync_repair.py

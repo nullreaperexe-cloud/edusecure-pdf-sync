@@ -7,7 +7,7 @@ from typing import Any, Dict, List, Set
 
 import supabase_announcements as announcements
 import supabase_gateway
-import openrouter_title as ai_title
+import groq_title as ai_title
 import runner
 import sync_repair as repair
 
@@ -258,7 +258,7 @@ def main() -> int:
             ]
 
             print(
-                f"OpenRouter batch {offset // AI_BATCH_SIZE + 1}: "
+                f"Groq batch {offset // AI_BATCH_SIZE + 1}: "
                 f"{len(batch)} announcements"
             )
 

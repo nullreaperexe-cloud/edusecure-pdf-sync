@@ -6,7 +6,7 @@ from typing import Any, Dict, List
 import requests
 
 import announcement_processor as announcements
-import openrouter_title as ai_title
+import groq_title as ai_title
 import runner
 
 AI_CALL_DELAY_SECONDS = 4.0
@@ -135,7 +135,7 @@ def main() -> int:
             evidence,
             announcements.ALLOWED_CATEGORIES,
         )
-        # Pace free OpenRouter requests so maintenance never floods the free route.
+        # Pace free Groq requests so maintenance never floods the free route.
         import time
         time.sleep(AI_CALL_DELAY_SECONDS)
         if not ai_meta:

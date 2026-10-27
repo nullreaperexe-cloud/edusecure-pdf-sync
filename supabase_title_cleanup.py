@@ -8,7 +8,7 @@ import os
 import re
 import sys
 
-import openrouter_title
+import groq_title
 import title_cleaner as intelligence
 import title_quality as quality
 import supabase_gateway as gateway
@@ -30,14 +30,14 @@ def choose_title(record: dict, allow_ai: bool) -> tuple[str, bool]:
     used_ai = False
     result = local
     # Preserve native-script lesson names; free models sometimes translate away critical names.
-    if allow_ai and not re.search(r"[\u0900-\u097f\u0a00-\u0a7f]", original) and openrouter_title.OPENROUTER_API_KEY and ai_candidate_needed(original, local):
+    if allow_ai and not re.search(r"[\u0900-\u097f\u0a00-\u0a7f]", original) and groq_title.GROQ_API_KEY and ai_candidate_needed(original, local):
         # Stored title/description are the ONLY historical evidence available.
         # Do not claim verification against PDF contents that were not extracted.
         evidence = [original]
         desc = str(record.get("description") or "").strip()
         if desc and desc != original:
             evidence.append(desc)
-        proposed = openrouter_title.generate_title(evidence, subject, fallback_title=local)
+        proposed = groq_title.generate_title(evidence, subject, fallback_title=local)
         if proposed and quality.supported_by_evidence(proposed, evidence):
             result = proposed
             used_ai = True
@@ -69,7 +69,7 @@ def main() -> int:
         checked += 1
         local = quality.polish_title(title_before, row.get("subject"))
         need_ai = ai_candidate_needed(title_before, local)
-        allow_ai = bool(need_ai and ai_calls < limit and openrouter_title.OPENROUTER_API_KEY)
+        allow_ai = bool(need_ai and ai_calls < limit and groq_title.GROQ_API_KEY)
         if allow_ai:
             ai_calls += 1
         title_after, _ = choose_title(row, allow_ai)

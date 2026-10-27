@@ -36,7 +36,7 @@ jobs:
 
       - name: Validate announcement code
         run: |
-          python -m py_compile announcement_processor.py announcement_backfill.py openrouter_title.py title_cleaner.py runner.py sync_repair.py
+          python -m py_compile announcement_processor.py announcement_backfill.py groq_title.py title_cleaner.py runner.py sync_repair.py
           python -m unittest -v test_announcements.py
 
       - name: Backfill historical EduSecure messages
@@ -46,6 +46,6 @@ jobs:
           EDUSECURE_PASSWORD: ${{ secrets.EDUSECURE_PASSWORD }}
           FIREBASE_ADMIN_EMAIL: ${{ secrets.FIREBASE_ADMIN_EMAIL || vars.FIREBASE_ADMIN_EMAIL }}
           FIREBASE_ADMIN_PASSWORD: ${{ secrets.FIREBASE_ADMIN_PASSWORD }}
-          OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+          GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
           ANNOUNCEMENT_BACKFILL_MAX_MESSAGES: "2000"
         run: python announcement_backfill.py
