@@ -1,5 +1,7 @@
 """Offline tests for private 8aPDF Google Drive disaster-recovery backup."""
 import json
+import io
+from contextlib import redirect_stdout
 import os
 import tempfile
 import unittest
@@ -112,6 +114,53 @@ class BackupTests(unittest.TestCase):
             self.assertIn("folder_PDFs", [x[0] for x in drive.files if x[1].endswith(".pdf")])
             row = next(data for _, name, data, _ in drive.files if name == "announcements.json")
             self.assertEqual(json.loads(row)["records"], announcements)
+
+    def test_oauth_refresh_failure_reports_safe_google_code_without_secret(self):
+        secret = "PRIVATE_REFRESH_TOKEN_MUST_NOT_APPEAR"
+        class FailedResponse:
+            status_code = 400
+            def __init__(self):
+                self.closed = False
+            def json(self):
+                return {"error": "invalid_grant", "error_description": secret}
+            def close(self):
+                self.closed = True
+        class FakeSession:
+            def __init__(self):
+                self.headers = {}
+                self.response = FailedResponse()
+            def request(self, method, url, **kwargs):
+                return self.response
+        session = FakeSession()
+        with patch.dict(os.environ, {
+            "GDRIVE_BACKUP_OAUTH_JSON": json.dumps({
+                "client_id": "test-client", "client_secret": "test-secret",
+                "refresh_token": secret
+            }),
+        }):
+            with self.assertRaises(backup.OAuthRefreshError) as error:
+                backup.Drive(session=session)
+        self.assertEqual(error.exception.oauth_error, "invalid_grant")
+        self.assertEqual(error.exception.http_status, 400)
+        self.assertTrue(session.response.closed)
+        self.assertNotIn(secret, str(error.exception))
+        with tempfile.TemporaryDirectory() as directory:
+            output = io.StringIO()
+            with (patch.object(backup, "STATUS", Path(directory) / "report.json"),
+                  patch.object(backup, "BACKUP_STAGE", "oauth_refresh"),
+                  patch.object(backup, "backup", side_effect=error.exception),
+                  redirect_stdout(output)):
+                self.assertEqual(backup.main(), 1)
+            report = json.loads((Path(directory) / "report.json").read_text())
+            self.assertEqual(report["oauth_error"], "invalid_grant")
+            self.assertEqual(report["stage"], "oauth_refresh")
+            self.assertEqual(report["http_status"], 400)
+            self.assertNotIn(secret, output.getvalue())
+
+    def test_unknown_google_error_code_is_not_logged(self):
+        error = backup.OAuthRefreshError(400, "MY_PRIVATE_UNRECOGNIZED_TOKEN")
+        self.assertEqual(error.oauth_error, "unknown")
+        self.assertNotIn("PRIVATE", str(error))
 
     def test_supabase_error_does_not_crash_primary_pipeline(self):
         with tempfile.TemporaryDirectory() as d:
