@@ -40,6 +40,22 @@ API = "https://www.googleapis.com/drive/v3/files"
 UPLOAD_API = "https://www.googleapis.com/upload/drive/v3/files"
 STATUS = Path("drive_backup_report.json")
 FOLDER = "8aPDF_Backup"
+BACKUP_STAGE = "configuration"
+OAUTH_ERROR_CODES = frozenset({
+    "invalid_grant", "invalid_client", "unauthorized_client",
+    "invalid_request", "access_denied", "temporarily_unavailable",
+    "unsupported_grant_type",
+})
+
+
+class OAuthRefreshError(RuntimeError):
+    """Safe OAuth diagnostic: only allowlisted machine error codes, never response text."""
+
+    def __init__(self, status, code):
+        self.http_status = int(status)
+        self.oauth_error = code if code in OAUTH_ERROR_CODES else "unknown"
+        super().__init__("Google OAuth refresh failed")
+
 # Fail closed for unexpected or internal URLs. Add verified public hosts explicitly
 # via environment variables as new PDF providers are introduced.
 DEFAULT_ALLOWED_HOSTS = (
@@ -143,10 +159,26 @@ class Drive:
     def __init__(self, session=None):
         self.session = session or requests.Session()
         credentials = oauth_credentials()
-        auth = assert_ok(retry_call(
+        response = retry_call(
             self.session, "POST", "https://oauth2.googleapis.com/token",
             data={**credentials, "grant_type": "refresh_token"},
-        )).json()
+        )
+        try:
+            if response.status_code >= 400:
+                # Google error_description and response body are deliberately
+                # never logged; only fixed non-sensitive error codes.
+                try:
+                    payload = response.json()
+                    raw_code = payload.get("error") if isinstance(payload, dict) else None
+                except (ValueError, TypeError):
+                    raw_code = None
+                raise OAuthRefreshError(response.status_code, raw_code)
+            response.raise_for_status()
+            auth = response.json()
+        finally:
+            response.close()
+        if not isinstance(auth, dict):
+            raise RuntimeError("Google OAuth token response was not a JSON object")
         token = auth.get("access_token", "")
         if not token:
             raise RuntimeError("Google OAuth token response has no access_token")
@@ -291,6 +323,8 @@ def fetch_pdf(url, max_bytes):
 
 
 def backup():
+    global BACKUP_STAGE
+    BACKUP_STAGE = "configuration"
     missing = configuration()
     if missing:
         record_status(status="not_configured", missing_secrets=missing)
@@ -298,7 +332,9 @@ def backup():
               ", ".join(missing), flush=True)
         return 0  # existing EduSecure sync must NEVER be blocked
 
+    BACKUP_STAGE = "oauth_refresh"
     drive = Drive()
+    BACKUP_STAGE = "drive_folders"
     root = os.getenv("GDRIVE_BACKUP_FOLDER_ID", "").strip() or drive.folder("root", FOLDER)
     pdf_folder = drive.folder(root, "PDFs")
     daily_folder = drive.folder(root, "daily_snapshots")
@@ -306,6 +342,7 @@ def backup():
     pdf_index = {f["name"]: f for f in drive.list(pdf_folder) if f.get("name")}
     daily_index = {f["name"]: f for f in drive.list(daily_folder) if f.get("name")}
 
+    BACKUP_STAGE = "supabase_inventory"
     materials = read_inventory("listMaterials")
     announcements = read_inventory("listAnnouncements")
     validate_snapshot(materials, root_index, "materials.json")
@@ -315,6 +352,7 @@ def backup():
     # back up full record objects, including raw JSON and admin edits.
     material_bytes = compact_json({"schema": 1, "table": "study_materials", "records": materials})
     announce_bytes = compact_json({"schema": 1, "table": "announcements", "records": announcements})
+    BACKUP_STAGE = "snapshot_upload"
     _, changed_mat = drive.put(root, "materials.json", material_bytes,
                                "application/json", root_index)
     _, changed_ann = drive.put(root, "announcements.json", announce_bytes,
@@ -337,6 +375,7 @@ def backup():
     # Rotate the starting point every hour. Otherwise ten permanently broken
     # URLs could exhaust the attempt budget forever and starve later PDFs.
     rotation = (int(time.time() // 3600) * max(1, max_pdfs)) % max(1, len(materials))
+    BACKUP_STAGE = "pdf_backup"
     pdf_rows = materials[rotation:] + materials[:rotation]
     for row in pdf_rows:
         url = str(row.get("pdf_url") or "").strip()
@@ -371,6 +410,7 @@ def backup():
               "drive_root_id": root}
     # Manifest intentionally never contains tokens or raw school data; use the
     # private snapshots for full records. Keep private folder permissions.
+    BACKUP_STAGE = "manifest_upload"
     drive.put(root, "backup-manifest.json", compact_json({
         "created_at": stamp(), **report, "pdf_files_seen": len(pdf_map)}),
         "application/json", root_index)
@@ -387,9 +427,14 @@ def main():
     except Exception as exc:
         # No secret values or message bodies in Action logs.
         kind = type(exc).__name__
-        print("Google Drive backup FAILED (" + kind + "); primary Supabase sync unaffected.",
+        details = {"status": "failed", "error_type": kind, "stage": BACKUP_STAGE}
+        if isinstance(exc, OAuthRefreshError):
+            details["oauth_error"] = exc.oauth_error
+            details["http_status"] = exc.http_status
+        print("Google Drive backup FAILED: " + json.dumps(details, sort_keys=True) +
+              "; strict Drive-first sync remains blocked until backup is complete.",
               flush=True)
-        record_status(status="failed", error_type=kind)
+        record_status(**details)
         return 1
 
 
