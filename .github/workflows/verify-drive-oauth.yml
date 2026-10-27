@@ -1,0 +1,63 @@
+name: Verify Google Drive OAuth Backup
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - ".github/workflows/verify-drive-oauth.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install backup dependencies
+        run: python -m pip install requests
+
+      - name: Verify fresh OAuth token and backup folder access (no writes)
+        env:
+          GDRIVE_BACKUP_OAUTH_JSON: ${{ secrets.GDRIVE_BACKUP_OAUTH_JSON }}
+          GDRIVE_BACKUP_CLIENT_ID: ${{ secrets.GDRIVE_BACKUP_CLIENT_ID }}
+          GDRIVE_BACKUP_CLIENT_SECRET: ${{ secrets.GDRIVE_BACKUP_CLIENT_SECRET }}
+          GDRIVE_BACKUP_REFRESH_TOKEN: ${{ secrets.GDRIVE_BACKUP_REFRESH_TOKEN }}
+          GDRIVE_BACKUP_FOLDER_ID: ${{ secrets.GDRIVE_BACKUP_FOLDER_ID }}
+        run: |
+          python - <<'PY'
+          import os
+          import drive_backup
+
+          missing = drive_backup.configuration()
+          if missing:
+              print("::error::Google Drive backup credentials missing or invalid. Check the secret names and JSON object.")
+              raise SystemExit(1)
+          print("Backup credential format: valid (values hidden).")
+          try:
+              drive = drive_backup.Drive()
+              print("Google OAuth refresh: SUCCESS.")
+              root = os.getenv("GDRIVE_BACKUP_FOLDER_ID", "").strip()
+              if root:
+                  contents = drive.list(root)
+                  print("Existing Google Drive backup folder: accessible.")
+                  print("Visible root items: " + str(len(contents)))
+              else:
+                  folders = drive.list("root", "8aPDF_Backup")
+                  print("No GDRIVE_BACKUP_FOLDER_ID configured; matching app-visible backup folders: " + str(len(folders)))
+                  if not folders:
+                      print("::warning::No app-visible backup folder. The live backup worker may create a new one.")
+          except Exception as exc:
+              print("::error::Google Drive verification failed at OAuth or folder access: " + type(exc).__name__)
+              if isinstance(exc, drive_backup.OAuthRefreshError):
+                  print("OAuth error code: " + str(exc.oauth_error) + " (HTTP " + str(exc.http_status) + ")")
+              raise SystemExit(1)
+          PY

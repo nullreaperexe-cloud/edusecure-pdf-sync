@@ -96,6 +96,7 @@ def worker(duration_seconds=18000,interval_seconds=300,timeout_seconds=1080,
             # only affect backup diagnostics, never the primary sync result.
             if last_backup_started is None or time.monotonic()-last_backup_started>=backup_interval:
                 last_backup_started=time.monotonic()
+                print("Starting hourly Google Drive backup verification.", flush=True)
                 backup_rc=run_drive_backup(backup_timeout)
                 summary["drive_backup_checks"]+=1
                 summary["drive_backup_failures"]+=int(backup_rc!=0)
