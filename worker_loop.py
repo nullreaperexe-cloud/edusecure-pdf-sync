@@ -70,6 +70,8 @@ def worker(duration_seconds=18000,interval_seconds=300,timeout_seconds=1080,
     next_tick=started
     last_backup_started=None
     backup_interval=max(300, int(os.getenv("GDRIVE_BACKUP_INTERVAL_SECONDS","3600")))
+    backup_retry_interval=max(300, int(os.getenv("GDRIVE_BACKUP_RETRY_SECONDS","300")))
+    last_backup_rc=None
     backup_timeout=max(60, int(os.getenv("GDRIVE_BACKUP_TIMEOUT_SECONDS","240")))
     summary={"started_at":now_iso(),"planned_minutes":round(duration_seconds/60,2),
              "check_interval_seconds":interval_seconds,"checks":0,
@@ -91,13 +93,15 @@ def worker(duration_seconds=18000,interval_seconds=300,timeout_seconds=1080,
             checked=now_iso()
             print(f"====== EduSecure / Supabase check #{n} at {checked} ======",flush=True)
             rc=run_cycle(timeout_seconds,command)
-            # Back up BOTH inventories after the normal EduSecure cycle, at most
-            # hourly by default. Initial backup is always attempted; failures
-            # only affect backup diagnostics, never the primary sync result.
-            if last_backup_started is None or time.monotonic()-last_backup_started>=backup_interval:
+            # Initial Google Drive backup runs after the first sync cycle;
+            # successful backups recur hourly, while failures retry every five
+            # minutes without ever blocking primary EduSecure/Supabase sync.
+            due_after=backup_retry_interval if last_backup_rc not in (None, 0) else backup_interval
+            if last_backup_started is None or time.monotonic()-last_backup_started>=due_after:
                 last_backup_started=time.monotonic()
-                print("Starting hourly Google Drive backup verification.", flush=True)
+                print("Starting Google Drive backup (failed attempts retry after 5 minutes).", flush=True)
                 backup_rc=run_drive_backup(backup_timeout)
+                last_backup_rc=backup_rc
                 summary["drive_backup_checks"]+=1
                 summary["drive_backup_failures"]+=int(backup_rc!=0)
                 summary["last_drive_backup_at"]=now_iso()
