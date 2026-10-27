@@ -31,7 +31,6 @@ on:
       - "announcement_processor.py"
       - "announcement_backfill.py"
       - "test_announcements.py"
-      - "test_title_intelligence.py"
       - "test_sync_repair.py"
       - "requirements.txt"
       - ".github/workflows/sync.yml"
