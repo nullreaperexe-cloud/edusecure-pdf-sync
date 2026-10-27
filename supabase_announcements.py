@@ -96,8 +96,7 @@ def upload_announcement(
         "ai_status":str(item.get("aiStatus") or "complete"),
         "raw":raw,
     }
-    import drive_first
-    drive_first.prepare_announcement(payload)
+    # Publish first; the worker's post-sync Drive backup is best-effort.
     result=gateway.call("publishAnnouncement",record=payload)
     if result.get("inserted") or result.get("duplicate"):
         print("✅ Supabase school announcement confirmed: "+payload["title"][:100])

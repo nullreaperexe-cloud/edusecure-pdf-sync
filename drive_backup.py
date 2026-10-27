@@ -330,7 +330,7 @@ def backup():
         record_status(status="not_configured", missing_secrets=missing)
         print("Google Drive backup NOT ACTIVE. Missing GitHub Actions secrets: " +
               ", ".join(missing), flush=True)
-        return 0  # existing EduSecure sync must NEVER be blocked
+        return 1  # backup unhealthy; caller records failure without blocking sync
 
     BACKUP_STAGE = "oauth_refresh"
     drive = Drive()
@@ -418,7 +418,7 @@ def backup():
     print("Google Drive backup: " + json.dumps(
         {k: v for k, v in report.items() if k not in ("pdf_errors", "drive_root_id")}
     ), flush=True)
-    return 0
+    return 0 if report["status"] == "complete" else 1
 
 
 def main():
@@ -432,7 +432,7 @@ def main():
             details["oauth_error"] = exc.oauth_error
             details["http_status"] = exc.http_status
         print("Google Drive backup FAILED: " + json.dumps(details, sort_keys=True) +
-              "; strict Drive-first sync remains blocked until backup is complete.",
+              "; primary EduSecure/Supabase sync is not blocked by backup failure.",
               flush=True)
         record_status(**details)
         return 1

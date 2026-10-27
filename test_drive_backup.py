@@ -21,7 +21,7 @@ class BackupTests(unittest.TestCase):
                       "GDRIVE_BACKUP_CLIENT_SECRET": "",
                       "GDRIVE_BACKUP_REFRESH_TOKEN": "",
                   })):
-                self.assertEqual(backup.backup(), 0)
+                self.assertEqual(backup.backup(), 1)
                 report = json.loads((Path(d) / "status.json").read_text())
                 self.assertEqual(report["status"], "not_configured")
 

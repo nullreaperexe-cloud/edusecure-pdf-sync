@@ -45,7 +45,7 @@ permissions:
   actions: write # Allow the worker to dispatch its 5-hour successor.
 
 concurrency:
-  # Only one active browser sync; a later scheduled run can safely retry errors.
+  # Never overlap live EduSecure browsers. Backup failures must not block sync.
   group: edusecure-scheduled-sync-v3
   cancel-in-progress: false
 
@@ -123,36 +123,8 @@ jobs:
                   print("Supabase announcement write path: authenticated and safely deduplicated.")
           PY
 
-      - name: Bootstrap complete Google Drive backup BEFORE live EduSecure sync
-        id: drive_bootstrap
-        env:
-          PYTHONUNBUFFERED: "1"
-          SUPABASE_URL: "https://xudhjwojgxblbsebkzso.supabase.co"
-          GDRIVE_BACKUP_OAUTH_JSON: ${{ secrets.GDRIVE_BACKUP_OAUTH_JSON }}
-          GDRIVE_BACKUP_CLIENT_ID: ${{ secrets.GDRIVE_BACKUP_CLIENT_ID }}
-          GDRIVE_BACKUP_CLIENT_SECRET: ${{ secrets.GDRIVE_BACKUP_CLIENT_SECRET }}
-          GDRIVE_BACKUP_REFRESH_TOKEN: ${{ secrets.GDRIVE_BACKUP_REFRESH_TOKEN }}
-          GDRIVE_BACKUP_MAX_PDFS_PER_RUN: "100"
-        timeout-minutes: 22
-        run: |
-          python -u drive_backup.py
-          python - <<'PY'
-          import json
-          from pathlib import Path
-          path=Path("drive_backup_report.json")
-          if not path.is_file():
-              raise SystemExit("Drive bootstrap did not produce an audit report")
-          result=json.loads(path.read_text(encoding="utf-8"))
-          status=result.get("status")
-          if status != "complete":
-              print("Google Drive bootstrap is not fully complete. " +
-                    f"Status={status}; PDFs pending={result.get('pdfs_pending')}; " +
-                    f"PDF errors={len(result.get('pdf_errors') or [])}.")
-              raise SystemExit("Stopping before new EduSecure publication: complete Drive backup required")
-          print("Complete historical Google Drive PDF + announcement backup confirmed.")
-          PY
-
       - name: Keep EduSecure worker alive for 5 hours (check every 5 minutes)
+        id: worker
         env:
           PYTHONUNBUFFERED: "1"
           EDUSECURE_USERNAME: ${{ secrets.EDUSECURE_USERNAME }}
@@ -170,14 +142,14 @@ jobs:
           GDRIVE_BACKUP_CLIENT_ID: ${{ secrets.GDRIVE_BACKUP_CLIENT_ID }}
           GDRIVE_BACKUP_CLIENT_SECRET: ${{ secrets.GDRIVE_BACKUP_CLIENT_SECRET }}
           GDRIVE_BACKUP_REFRESH_TOKEN: ${{ secrets.GDRIVE_BACKUP_REFRESH_TOKEN }}
-          DRIVE_FIRST_REQUIRED: "1"
+          GDRIVE_BACKUP_FOLDER_ID: ${{ secrets.GDRIVE_BACKUP_FOLDER_ID }}
         run: |
           python -u worker_loop.py
 
       - name: Dispatch next five-hour worker
-        # Strict Drive-first: never endlessly relaunch workers when the
-        # mandatory historical Drive bootstrap did not succeed.
-        if: ${{ always() && steps.drive_bootstrap.outcome == 'success' }}
+        # Only renew a completed healthy worker; the independent scheduled
+        # watchdog retries after an all-failed worker without a tight loop.
+        if: ${{ always() && steps.worker.outcome == 'success' }}
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}

@@ -142,42 +142,28 @@ Never add OAuth tokens, school credentials, or private backup files to the
 public GitHub repository or public URLs. Run offline regression tests with
 **python -m unittest discover -v**.
 
-## Mandatory Google Drive-first worker mode (2026-10)
+## Supabase-first live sync, then best-effort Google Drive backup (2026-10)
 
-The EduSecure worker now has a **strict initial bootstrap** step, before any
-school messages are processed. It authenticates Google Drive, creates/finds
-the **private 8aPDF_Backup** root folder, creates **PDFs/** and
-**daily_snapshots/**, exports the complete current Supabase
-**study_materials** and **announcements** records into two JSON files,
-and attempts **all** existing original PDFs (up to 100 attempts in the initial
-pass). The normal five-hour worker **does not start** unless the bootstrap
-reports status **complete**. The snapshot may exist while original PDFs
-are still incomplete: this is **partial**, not success. Protected/inaccessible
-source PDFs can require separate recovery; do not claim that 5 TB storage
-by itself solves source-download permissions.
+The live worker first reads new EduSecure PDFs and announcements and publishes
+verified, deduplicated records to 8aPDF Supabase. **Google Drive OAuth is not
+part of the EduSecure publication path.** After the first scan, and then up to
+once per hour, `worker_loop.py` calls `drive_backup.py` separately.
 
-Once bootstrapped, the worker sets **DRIVE_FIRST_REQUIRED=1**.
-For **new PDFs**, it must save verified PDF bytes into private
-**PDFs/<source-url-sha256>.pdf**, then a durable
-**pending_materials/<id>.json** with complete record metadata, and only
-after Drive confirms both uploads can it call the Supabase insert.
-For **new announcements**, it first writes
-**pending_announcements/<id>.json**, then publishes to Supabase.
-On Drive authentication failure, quota errors or inaccessible PDF bytes,
-the corresponding Supabase write is **deferred**; the next scanner cycle
-can retry. Existing Supabase records remain untouched and the website
-still reads Supabase. Hourly full snapshots subsequently include
-all successful edits and publications, including admin-panel updates.
+- On backup success, the private Drive folder `8aPDF_Backup` receives full
+  current material and announcement JSON snapshots, plus bounded actual PDF
+  copies and an audit manifest. The backup reads Supabase records (including
+  earlier successful syncs); it is independent of the current EduSecure scan.
+- If Google OAuth is revoked/expired, PDFs are inaccessible, or Drive has an
+  outage, the backup records an explicit failure/partial status and the worker
+  continues checking EduSecure every five minutes. The next scheduled backup
+  attempt retries missing PDF copies. Existing records are never deleted.
+- New PDF publication relies on the original source URL; Google Drive is a
+  private disaster-recovery backup, not the user-facing public PDF host.
+- A `Google Drive backup: invalid_grant` diagnostic means the refresh token
+  must be renewed in GitHub Actions Secrets. No token is logged or copied to
+  source code. Backup is not claimed complete until Drive confirms it.
 
-This mode is intentionally **fail-closed**. Missing or invalid
-GDRIVE_BACKUP_OAUTH_JSON credentials, incomplete original-PDF
-backfill, and other initial backup errors prevent the new worker from
-starting. Check the **Bootstrap complete Google Drive backup BEFORE live
-EduSecure sync** step and the **drive_backup_report.json** artifact.
-Do NOT paste OAuth credentials into issues, chat or source files.
-
-For an existing manually selected folder, GDRIVE_BACKUP_FOLDER_ID overrides
-creation. **Leave it unset** if you want the automation itself to create
-8aPDF_Backup in the OAuth account's My Drive. Unlike the older mode,
-a successful primary Supabase insert without a verified Google Drive
-copy is not permitted for newly discovered PDFs.
+An initial full historical Drive copy is no longer a blocking preflight.
+`DRIVE_FIRST_REQUIRED` is obsolete and must not be set in the sync workflow.
+Do not restore the removed pre-publication Drive calls in
+`supabase_materials.upload_material` or `supabase_announcements.upload_announcement`.
