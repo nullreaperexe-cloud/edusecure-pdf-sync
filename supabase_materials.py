@@ -12,6 +12,7 @@ from typing import Any, Dict
 from urllib.parse import urlsplit
 
 import supabase_gateway as gateway
+import title_quality as quality
 from reliable_http import canonical_url
 
 
@@ -32,7 +33,10 @@ def build_material(item: Dict[str, Any], source_date: date, order: int) -> Dict[
     parsed = urlsplit(pdf_url)
     if parsed.scheme not in {"http", "https"} or not parsed.netloc:
         raise ValueError("Refusing to publish a non-HTTP document URL")
-    title = str(safe.get("title") or "").strip()
+    title = quality.fit_title(
+        safe.get("title"), safe.get("subject", ""),
+        source_text=str(safe.get("description") or ""), fallback="Study Material",
+    )
     if not title:
         raise ValueError("Refusing to publish a PDF with an empty title")
     identity = canonical_url(pdf_url)
