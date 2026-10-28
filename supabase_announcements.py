@@ -12,6 +12,7 @@ from typing import Any, Dict, Optional, Set, Tuple
 import announcement_processor as legacy
 from announcement_processor import *  # reuse text sanitization and categorization
 import supabase_gateway as gateway
+import title_quality as quality
 
 
 def _timestamp(d: Optional[date]) -> str:
@@ -79,6 +80,14 @@ def upload_announcement(
     source_id=str(item.get("sourceMessageId") or "").strip()
     if not source_id:
         return False
+    # Final publisher gate: neither Groq output nor a pending fallback may
+    # bypass the 40-character word-safe title policy.
+    item=dict(item)
+    item["title"]=quality.fit_title(
+        item.get("title"), item.get("subject", "General"),
+        source_text=(str(item.get("originalMessage") or "")+" "+str(item.get("description") or "")),
+        fallback="School Update",
+    )
     raw=_original(item,message_date)
     payload={
         "id":source_id,
