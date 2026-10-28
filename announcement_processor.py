@@ -556,9 +556,12 @@ def build_fallback_announcement(
 
     words = cleaned_primary.split()
     short_seed = " ".join(words[:12]) if words else "School Update"
-    title = ai_title._final_title_cleanup(short_seed, "General")
-    if not title:
-        title = "School Update"
+    title = ai_title.quality.fit_title(
+        ai_title._final_title_cleanup(short_seed, "General"),
+        "General",
+        source_text=detail_text or primary,
+        fallback="School Update",
+    )
 
     attachment = clean(attachment_url)
     return {
@@ -601,11 +604,10 @@ def build_announcement(
     cleaned_detail = prepare_announcement_ai_text(detail_text)
 
     evidence = [cleaned_primary or primary]
-    if (
-        len(cleaned_primary) < 40
-        and cleaned_detail
-        and cleaned_detail != cleaned_primary
-    ):
+    # The EduSecure card preview is frequently a broken sentence. Always pass
+    # the full detail as separate evidence; otherwise Groq cannot identify the
+    # actual result, assignment, chapter or event mentioned later in the notice.
+    if cleaned_detail and cleaned_detail != cleaned_primary:
         evidence.append(cleaned_detail)
 
     ai_meta = ai_title.generate_announcement_metadata(
