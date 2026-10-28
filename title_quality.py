@@ -106,3 +106,88 @@ def supported_by_evidence(candidate: str, evidence: Any) -> bool:
     if not sw:
         return True
     return len(sw & cw) >= min(2, len(cw)) and len(sw & cw) / len(cw) >= 0.5
+
+
+MAX_TITLE_LENGTH = 40
+_INCOMPLETE_ENDINGS = frozenset({
+    "and", "or", "of", "for", "to", "from", "in", "on", "with", "the",
+    "a", "an", "also", "if", "but", "about", "regarding", "your", "our",
+    "my", "their", "at", "by", "into", "as", "this", "that",
+})
+
+
+def fit_title(value: Any, subject: Any = "", *, source_text: Any = "",
+              fallback: str = "School Update") -> str:
+    """Meaningful, readable school title of at most 40 Unicode characters.
+
+    Not a fixed 40-character slice: remove app fragments, prefer complete
+    phrases, preserve identifiers, and trim at word boundaries as a last resort.
+    Full original prose stays in description/originalMessage.
+    """
+    title = polish_title(value, subject)
+    original = title
+    source = str(source_text or "")
+    if not title or title in {"Study Material", "School Notice"}:
+        return fallback
+
+    # The EduSecure preview often appends part of the next Class Work sentence.
+    title = re.split(r"\.\s+(?=[A-Z])", title, maxsplit=1)[0].strip(" -–—:|,.;")
+    title = re.sub(r"\s+in\s+your\s+own$", "", title, flags=re.I)
+    title = re.sub(r"\s+(?:tomorrow\s+)?and\s+come\b.*$", "", title, flags=re.I)
+    title = re.sub(
+        r"^(?:we\s+are\s+)?(?:delighted|pleased|happy)\s+to\s+announce\s+(?:the\s+)?",
+        "", title, flags=re.I,
+    )
+    title = re.sub(r"^(?:kindly|please)\s+", "", title, flags=re.I)
+    title = re.sub(
+        r"^(?:English|Computer|Maths?|Mathematics|Science|Hindi|Punjabi|French|Social Science)\s*[-:–]\s*",
+        "", title, flags=re.I,
+    )
+
+    # A misleading preview like "we are delighted to announce the results of"
+    # has no topic. Recover the named result from the *full* message if present.
+    if re.fullmatch(r"(?:the\s+)?results?\s*(?:of|for)?", title, flags=re.I):
+        match = re.search(
+            r"\bresults?\s+(?:of|for)\s+(.+?)(?:\.\s|[;:\n]|$)",
+            source, flags=re.I,
+        )
+        if match:
+            topic = re.sub(r"\s+", " ", match.group(1)).strip(" -–—:|,.;")
+            candidate = topic + " Results"
+            if 8 <= len(candidate) <= MAX_TITLE_LENGTH:
+                title = candidate
+        if re.fullmatch(r"(?:the\s+)?results?\s*(?:of|for)?", title, flags=re.I):
+            title = "School Results"
+
+    if len(title) > MAX_TITLE_LENGTH:
+        # Keep the useful named lesson/book and real exercise identifiers.
+        title = re.sub(r"\bWorksheet Answer Key\b", "Answer Key", title, flags=re.I)
+        match = re.search(r"\bBBC\s+Compacta\s+Module\s+\d+\b", title, flags=re.I)
+        if match and re.match(r"^Bring\b", title, flags=re.I):
+            title = "Bring " + match.group(0)
+        title = re.sub(
+            r"\bWrite\s*/\s*print\s+programs?\s+of\s+chapter\s+(\d+(?:\.\d+)*)\b",
+            r"Write/Print Chapter \1 Programs", title, flags=re.I,
+        )
+    if len(title) > MAX_TITLE_LENGTH:
+        title = re.sub(r"\bChapter\b", "Ch.", title, flags=re.I)
+    if len(title) > MAX_TITLE_LENGTH:
+        title = re.sub(r"\s+and\s+", " & ", title, flags=re.I)
+
+    # Last resort: drop whole words, never cut a word or leave "of/and/to".
+    words = title.split()
+    while words and len(" ".join(words)) > MAX_TITLE_LENGTH:
+        words.pop()
+    while words and re.sub(r"[^\w]+", "", words[-1]).lower() in _INCOMPLETE_ENDINGS:
+        words.pop()
+    if words and re.fullmatch(r"module|chapter|exercise|unit|no\.?", words[-1], flags=re.I):
+        # Do not strand an academic identifier without its accompanying number.
+        if re.search(r"\b" + re.escape(words[-1]) + r"\s*\d+", original, flags=re.I):
+            words.pop()
+
+    result = " ".join(words).strip(" -–—:|,.;")
+    if len(result) < 8 or not re.search(r"\w", result):
+        return fallback
+    if result[:1].islower():
+        result = result[0].upper() + result[1:]
+    return result
