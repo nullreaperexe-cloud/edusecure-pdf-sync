@@ -350,8 +350,11 @@ def backup():
     announcements = [row for row in announcements if not privacy.is_personal_notice(
         row.get("title"), row.get("description"), row.get("original_message"), row.get("raw")
     )]
-    materials = [row for row in materials if not privacy.is_personal_notice(
-        row.get("title"), row.get("description"), row.get("raw")
+    # Admin-uploaded class PDFs remain untouched; only sourced EduSecure
+    # student-personal PDFs are excluded from the shared backup inventory.
+    materials = [row for row in materials if not (
+        "edusecure" in str(row.get("source") or "").lower() and
+        privacy.is_personal_notice(row.get("title"),row.get("description"),row.get("raw"))
     )]
     validate_snapshot(materials, root_index, "materials.json")
     validate_snapshot(announcements, root_index, "announcements.json")
