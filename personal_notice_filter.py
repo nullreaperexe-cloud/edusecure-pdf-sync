@@ -20,7 +20,6 @@ from typing import Any
 _PROTECTED_HASHES = frozenset({
     "924abc170fd6fc74a8518132092d68ecd35b72dd56372c231ecf81b007870bf7",
     "765b15e9a784ded0721efe8d6c78c2e6149c632a9b0e660f67e4af0a8904af51",
-    "b72d847f28b5a615aacbb9bb379b43835984ed2aa2eeeea19c46da68980cb7b3",
 })
 
 # Attendance notifications addressed to one child are private even if the
