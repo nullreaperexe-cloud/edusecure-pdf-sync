@@ -21,6 +21,7 @@ import supabase_announcements as announcements
 import supabase_materials as supabase_store
 import supabase_gateway
 import pdf_integrity as pdfguard
+import personal_notice_filter as privacy
 from reliable_http import request as http_request, canonical_url
 from push_bridge import notify_published
 
@@ -430,6 +431,7 @@ def main() -> int:
         "announcements_created": [],
         "announcement_duplicates_skipped": 0,
         "announcement_messages_ignored": 0,
+        "personal_messages_skipped": 0,
         "announcement_ai_retries": 0,
         "uploaded": [],
         "failures": [],
@@ -484,6 +486,10 @@ def main() -> int:
             fp = message.get("fp") or legacy.fingerprint(message_text)
             if fp:
                 processed.add(fp)
+            if privacy.is_personal_notice(message_text):
+                report["personal_messages_skipped"] += 1
+                print("Private student message skipped at EduSecure dashboard.")
+                continue
 
             msg_date = legacy.extract_message_date(message_text)
 
@@ -523,6 +529,11 @@ def main() -> int:
 
             report["messages_opened"] += 1
             detail_text = legacy.app_current_text(driver)
+            if privacy.is_personal_notice(message_text, detail_text):
+                report["personal_messages_skipped"] += 1
+                print("Private student message skipped after reading detail.")
+                legacy.return_dashboard_and_restore_v25(driver, app_handle, saved_position)
+                continue
             attachment_url = extract_attachment_url(driver, app_handle)
             pdf_url = attachment_url if is_pdf_attachment_url(attachment_url) else None
 
@@ -679,6 +690,7 @@ def main() -> int:
         print(f"Announcement duplicates skipped: {report['announcement_duplicates_skipped']}")
         print(f"Announcement messages ignored: {report['announcement_messages_ignored']}")
         print(f"Announcements deferred for retry: {report['announcement_ai_retries']}")
+        print(f"Private student messages blocked: {report['personal_messages_skipped']}")
         print(f"Failures: {len(report['failures'])}")
         return 1 if report["failures"] else 75 if report["announcement_ai_retries"] else 0
     except Exception as exc:
