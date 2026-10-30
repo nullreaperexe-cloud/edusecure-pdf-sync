@@ -35,6 +35,7 @@ from urllib.parse import urlsplit, urljoin
 
 import requests
 import supabase_gateway
+import personal_notice_filter as privacy
 
 API = "https://www.googleapis.com/drive/v3/files"
 UPLOAD_API = "https://www.googleapis.com/upload/drive/v3/files"
@@ -345,6 +346,13 @@ def backup():
     BACKUP_STAGE = "supabase_inventory"
     materials = read_inventory("listMaterials")
     announcements = read_inventory("listAnnouncements")
+    # A missed private row must not reach Drive snapshots, including raw JSON.
+    announcements = [row for row in announcements if not privacy.is_personal_notice(
+        row.get("title"), row.get("description"), row.get("original_message"), row.get("raw")
+    )]
+    materials = [row for row in materials if not privacy.is_personal_notice(
+        row.get("title"), row.get("description"), row.get("raw")
+    )]
     validate_snapshot(materials, root_index, "materials.json")
     validate_snapshot(announcements, root_index, "announcements.json")
 
