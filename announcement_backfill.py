@@ -300,6 +300,7 @@ def main() -> int:
                     "subject": meta["subject"],
                     "priority": meta["priority"],
                     "aiModel": meta.get("aiModel", ""),
+                    "keyPoints": meta.get("keyPoints", []),
                     "aiStatus": "complete",
                     "originalMessage": item["message_text"],
                     "sourceMessageId": item["id"],
