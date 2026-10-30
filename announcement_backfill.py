@@ -10,6 +10,7 @@ import supabase_gateway
 import groq_title as ai_title
 import runner
 import sync_repair as repair
+import personal_notice_filter as privacy
 
 
 MAX_MESSAGES = int(os.environ.get("ANNOUNCEMENT_BACKFILL_MAX_MESSAGES", "2000"))
@@ -126,6 +127,10 @@ def main() -> int:
                 processed.add(fp)
 
             scanned += 1
+            if privacy.is_personal_notice(message_text):
+                ignored += 1
+                print("Private student notice skipped during historical recovery.")
+                continue
             msg_date = runner.legacy.extract_message_date(message_text)
             if recovery_floor and msg_date and msg_date < recovery_floor:
                 old_confirmations += 1
@@ -150,6 +155,11 @@ def main() -> int:
 
             opened += 1
             detail_text = runner.legacy.app_current_text(driver)
+            if privacy.is_personal_notice(message_text, detail_text):
+                ignored += 1
+                print("Private student detail excluded from historical recovery.")
+                runner.legacy.return_dashboard_and_restore_v25(driver, app_handle, saved_position)
+                continue
             attachment_url = repair.extract_attachment_url(driver, app_handle)
 
             driver.switch_to.window(app_handle)
