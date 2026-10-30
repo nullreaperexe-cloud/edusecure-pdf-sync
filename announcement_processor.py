@@ -625,6 +625,7 @@ def build_announcement(
             "subject": ai_meta["subject"],
             "priority": ai_meta["priority"],
             "aiModel": ai_meta.get("aiModel", ""),
+            "keyPoints": ai_meta.get("keyPoints", []),
             "aiStatus": "complete",
         }
     )
