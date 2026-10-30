@@ -13,6 +13,7 @@ import announcement_processor as legacy
 from announcement_processor import *  # reuse text sanitization and categorization
 import supabase_gateway as gateway
 import title_quality as quality
+import personal_notice_filter as privacy
 
 
 def _timestamp(d: Optional[date]) -> str:
@@ -77,6 +78,12 @@ def upload_announcement(
     existing_document_name: str = "",
     preserve_created_at: bool = False,
 ) -> bool:
+    # Last line of defense: do not publish a student's private ParentApp data,
+    # even when AI has rewritten the announcement title.
+    if privacy.is_personal_notice(item.get("originalMessage"), item.get("title"),
+                                  item.get("description"), item.get("raw")):
+        print("Private EduSecure announcement blocked before Supabase publication.")
+        return False
     source_id=str(item.get("sourceMessageId") or "").strip()
     if not source_id:
         return False
@@ -121,6 +128,9 @@ def process_no_attachment_message(
     existing_source_ids: Set[str],
     attachment_url: str = "",
 ) -> Tuple[str, Optional[Dict[str,Any]]]:
+    if privacy.is_personal_notice(message_text, detail_text):
+        print("Private EduSecure notice skipped before classification and publishing.")
+        return "ignored", None
     source_id=legacy.stable_message_id(message_text,message_date)
     if source_id in existing_source_ids:
         return "duplicate",None
