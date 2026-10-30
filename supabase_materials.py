@@ -14,6 +14,7 @@ from urllib.parse import urlsplit
 import supabase_gateway as gateway
 import title_quality as quality
 from reliable_http import canonical_url
+import personal_notice_filter as privacy
 
 
 def list_materials(_unused_token: str = "") -> list[Dict[str, Any]]:
@@ -61,6 +62,10 @@ def build_material(item: Dict[str, Any], source_date: date, order: int) -> Dict[
 def upload_material(
     item: Dict[str, Any], source_date: date, order: int, _unused_token: str = ""
 ) -> bool:
+    # Private student-specific documents are not shared with the public PDF library.
+    if privacy.is_personal_notice(item.get("title"), item.get("description")):
+        print("Private student PDF metadata excluded from public library.")
+        return False
     payload = build_material(item, source_date, order)
     # Supabase is the source of truth. The worker backs up its verified
     # inventories to Google Drive AFTER this publication, independently.
