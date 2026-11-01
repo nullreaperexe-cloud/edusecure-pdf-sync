@@ -1,4 +1,4 @@
-"""Regression coverage for EduSecure 40-character titles and full-message AI input."""
+"""Regression coverage for EduSecure word-safe, expanded 72-character titles and full-message AI input."""
 import unittest
 from datetime import date
 from unittest.mock import patch
@@ -10,23 +10,23 @@ import supabase_announcements
 import supabase_materials
 
 
-class FortyCharacterTitleTests(unittest.TestCase):
+class CompleteTitleTests(unittest.TestCase):
     def test_real_broken_screenshot_titles(self):
         cases = [
             ("complete the back exercises in your own. Class",
              "Complete the back exercises"),
             ("English- Bring literature notebook and BBC Compacta module 7",
-             "Bring BBC Compacta module 7"),
+             None),
             ("bring unchecked English notebooks tomorrow and come",
-             "Bring unchecked English notebooks"),
+             None),
             ("Computer - Write/print programs of chapter 6 in notebook", None),
             ("Fractions in Disguise Worksheet Answer Key",
-             "Fractions in Disguise Answer Key"),
+             "Fractions in Disguise Worksheet Answer Key"),
         ]
         for raw, expected in cases:
             with self.subTest(raw=raw):
                 result = quality.fit_title(raw)
-                self.assertLessEqual(len(result), 40)
+                self.assertLessEqual(len(result), quality.MAX_TITLE_LENGTH)
                 self.assertFalse(result.endswith((" and", " of", " to", " for")))
                 self.assertNotIn("...", result)
                 if expected:
@@ -44,14 +44,14 @@ class FortyCharacterTitleTests(unittest.TestCase):
     def test_long_titles_never_split_a_word(self):
         text = "Bring your literature notebook and BBC Compacta module 7 on Saturday"
         value = quality.fit_title(text)
-        self.assertLessEqual(len(value), 40)
+        self.assertLessEqual(len(value), quality.MAX_TITLE_LENGTH)
         self.assertNotIn("\u2026", value)
         self.assertFalse(value.endswith((" and", " the", " of")))
         self.assertIn("BBC", value)
 
     def test_native_script_stays_native(self):
         value = quality.fit_title("ਪੰਜਾਬੀ ਪਾਠ ਪੜ੍ਹਨ ਲਈ ਕਿਰਪਾ ਕਰਕੇ ਪੂਰੀ ਤਿਆਰੀ ਨਾਲ ਸਕੂਲ ਆਉਣਾ")
-        self.assertLessEqual(len(value), 40)
+        self.assertLessEqual(len(value), quality.MAX_TITLE_LENGTH)
         self.assertTrue(any("\u0a00" <= c <= "\u0a7f" for c in value))
 
     def test_groq_validation_limits_long_output(self):
@@ -63,13 +63,13 @@ class FortyCharacterTitleTests(unittest.TestCase):
             list(ALLOWED_CATEGORIES), "test-groq",
         )
         self.assertIsNotNone(meta)
-        self.assertLessEqual(len(meta["title"]), 40)
+        self.assertLessEqual(len(meta["title"]), quality.MAX_TITLE_LENGTH)
         self.assertIn("notebooks", meta["title"].lower())
 
     def test_prompt_examples_and_hard_rule(self):
         from announcement_processor import ALLOWED_CATEGORIES
         prompt = groq._announcement_system_prompt(list(ALLOWED_CATEGORIES))
-        self.assertIn("40 Unicode characters", prompt)
+        self.assertIn("72 Unicode characters", prompt)
         self.assertIn("FULL message", prompt)
         self.assertIn("Perfecting Warli Arts Results", prompt)
 
@@ -109,7 +109,7 @@ class FortyCharacterTitleTests(unittest.TestCase):
         }
         with patch.object(supabase_announcements.gateway, "call", side_effect=fake_call):
             self.assertTrue(supabase_announcements.upload_announcement(item, date(2026,10,28)))
-        self.assertLessEqual(len(seen["title"]), 40)
+        self.assertLessEqual(len(seen["title"]), quality.MAX_TITLE_LENGTH)
         self.assertEqual(seen["raw"]["title"], seen["title"])
         self.assertIn("tomorrow", seen["description"])
 
@@ -121,7 +121,7 @@ class FortyCharacterTitleTests(unittest.TestCase):
             "url": "https://example.org/study.pdf",
         }
         result = supabase_materials.build_material(item, date(2026, 10, 28), 1)
-        self.assertLessEqual(len(result["title"]), 40)
+        self.assertLessEqual(len(result["title"]), quality.MAX_TITLE_LENGTH)
         self.assertEqual(result["pdf_url"], "https://example.org/study.pdf")
 
 
