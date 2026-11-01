@@ -15,7 +15,8 @@ import supabase_gateway as gateway
 
 def ai_candidate_needed(title: str, locally_cleaned: str) -> bool:
     return bool(
-        len(locally_cleaned.split()) > 11
+        len(locally_cleaned.split()) > 11 or len(title) > quality.MAX_TITLE_LENGTH
+        or bool(re.search(r"(?:&|\.{3}|…|\bfind|\band|\bof|\bto)\s*$", title, flags=re.I))
         or re.search(r"\b(?:find attached|attached (?:pdf|file)|kindly|please|dear students|"
                      r"complete it|were done|bring your|tomorrow|reminder:)\b", title, flags=re.I)
         or locally_cleaned in {"Study Material", "School Notice"}
@@ -24,7 +25,8 @@ def ai_candidate_needed(title: str, locally_cleaned: str) -> bool:
 def choose_title(record: dict, allow_ai: bool) -> tuple[str, bool]:
     original = str(record.get("title") or "").strip()
     subject = intelligence.normalize_subject(record.get("subject"))
-    local = quality.polish_title(original, subject)
+    detail = str(record.get("description") or "")
+    local = quality.fit_title(original, subject, source_text=detail, fallback=original)
     if not local or local in {"Study Material", "School Notice"}:
         return original, False
     used_ai = False
@@ -67,7 +69,7 @@ def main() -> int:
         if not title_before:
             continue
         checked += 1
-        local = quality.polish_title(title_before, row.get("subject"))
+        local = quality.fit_title(title_before, row.get("subject"), source_text=row.get("description") or "", fallback=title_before)
         need_ai = ai_candidate_needed(title_before, local)
         allow_ai = bool(need_ai and ai_calls < limit and groq_title.GROQ_API_KEY)
         if allow_ai:
