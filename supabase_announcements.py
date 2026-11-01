@@ -88,7 +88,7 @@ def upload_announcement(
     if not source_id:
         return False
     # Final publisher gate: neither Groq output nor a pending fallback may
-    # bypass the 40-character word-safe title policy.
+    # bypass the 72-character word-safe title policy.
     item=dict(item)
     item["title"]=quality.fit_title(
         item.get("title"), item.get("subject", "General"),
