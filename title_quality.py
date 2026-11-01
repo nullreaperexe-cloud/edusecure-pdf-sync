@@ -108,17 +108,18 @@ def supported_by_evidence(candidate: str, evidence: Any) -> bool:
     return len(sw & cw) >= min(2, len(cw)) and len(sw & cw) / len(cw) >= 0.5
 
 
-MAX_TITLE_LENGTH = 40
+MAX_TITLE_LENGTH = 72
 _INCOMPLETE_ENDINGS = frozenset({
     "and", "or", "of", "for", "to", "from", "in", "on", "with", "the",
     "a", "an", "also", "if", "but", "about", "regarding", "your", "our",
     "my", "their", "at", "by", "into", "as", "this", "that",
+    "find", "plus", "also",
 })
 
 
 def fit_title(value: Any, subject: Any = "", *, source_text: Any = "",
               fallback: str = "School Update") -> str:
-    """Meaningful, readable school title of at most 40 Unicode characters.
+    """Meaningful, readable school title of at most 72 Unicode characters.
 
     Not a fixed 40-character slice: remove app fragments, prefer complete
     phrases, preserve identifiers, and trim at word boundaries as a last resort.
@@ -130,6 +131,9 @@ def fit_title(value: Any, subject: Any = "", *, source_text: Any = "",
     if not title or title in {"Study Material", "School Notice"}:
         return fallback
 
+    # Normalize stranded punctuation and clipped fragments before length fitting.
+    title = re.sub(r"\s*(?:&|\+|\.{3}|…)\s*$", "", title).strip()
+    title = re.sub(r"\s+\bfind\s*$", "", title, flags=re.I).strip()
     # The EduSecure preview often appends part of the next Class Work sentence.
     title = re.split(r"\.\s+(?=[A-Z])", title, maxsplit=1)[0].strip(" -–—:|,.;")
     title = re.sub(r"\s+in\s+your\s+own$", "", title, flags=re.I)
