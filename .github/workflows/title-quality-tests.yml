@@ -2,10 +2,16 @@ name: EduSecure Title Intelligence Tests
 
 on:
   workflow_dispatch:
+  pull_request:
+    paths:
+      - "**/*.py"
+      - ".github/workflows/title-quality-tests.yml"
   push:
     branches: [main]
     paths:
       - "title_quality.py"
+      - "school_text.py"
+      - "test_nonbroken_edusecure.py"
       - "title_cleaner.py"
       - "groq_title.py"
       - "supabase_title_cleanup.py"
@@ -28,6 +34,6 @@ jobs:
           cache: pip
       - run: python -m pip install -r requirements.txt
       - name: Check title scripts compile
-        run: python -m py_compile title_quality.py title_cleaner.py groq_title.py supabase_title_cleanup.py
+        run: python -m py_compile title_quality.py title_cleaner.py groq_title.py supabase_title_cleanup.py school_text.py supabase_materials.py
       - name: Run title grammar and hallucination regression tests
-        run: python -m unittest -v test_title_intelligence.py test_title_quality.py
+        run: python -m unittest -v test_title_intelligence.py test_title_quality.py test_40_character_titles.py test_nonbroken_edusecure.py
