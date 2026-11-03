@@ -16,6 +16,8 @@ from selenium.common.exceptions import WebDriverException
 
 import sync as legacy
 import title_cleaner as intelligence
+import title_quality as quality
+import school_text
 import groq_title as ai_title
 import supabase_announcements as announcements
 import supabase_materials as supabase_store
@@ -607,9 +609,16 @@ def main() -> int:
                 legacy.return_dashboard_and_restore_v25(driver, app_handle, saved_position)
                 continue
 
-            # Use the selected dashboard message, not potentially stale full-page
-            # detail DOM text from another EduSecure card.
+            # Preserve the original teacher wording from the opened EduSecure
+            # message. Trust the longer detail only when it matches this card's
+            # preview (older detail screens can remain mounted in the DOM).
+            # Strip calendar dates, NOT chapter or exercise numbers.
+            school_description = school_text.source_pdf_description(
+                message_text, detail_text,
+            )
             original_evidence = [message_text]
+            if school_description and school_description != message_text:
+                original_evidence.append(school_description)
             extracted_title = legacy.make_title(
                 message_text,
                 pdf_url,
@@ -629,28 +638,42 @@ def main() -> int:
                 {
                     "title": extracted_title,
                     "subject": initially_detected,
-                    "description": extracted_title,
+                    "description": school_description or message_text,
                     "url": pdf_url,
                     "_evidence": original_evidence,
                 }
             )
 
-            # Generate the NEW material title with Groq's free router only.
-            # If Groq is unavailable/rate-limited, ai_title.generate_title()
-            # returns the existing deterministic clean title so syncing continues.
+            # Offline fallback is meaningful even when Groq is unavailable.
+            # AI is constrained by both message and document evidence; neither
+            # a dangling "Ch" nor a sliced mathematical expression is accepted.
+            fallback_title = quality.contextual_pdf_title(
+                extracted_title, original_evidence, base_item["subject"],
+            )
             generated_title = ai_title.generate_title(
                 original_evidence,
                 subject=base_item["subject"],
-                fallback_title=base_item["title"],
+                fallback_title=fallback_title,
             )
             final_title, verification = pdfguard.select_verified_title(
-                message_text, generated_title, base_item["title"], pdf_text,
+                school_description or message_text, generated_title,
+                fallback_title, pdf_text,
+            )
+            if not quality.supported_by_evidence(final_title, original_evidence):
+                final_title = fallback_title
+                verification += "+source-fallback"
+            final_title = quality.fit_title(
+                final_title, base_item["subject"],
+                source_text=school_description or message_text,
+                fallback=fallback_title,
             )
             print(f"PDF title integrity: {verification}; extraction={pdf_state}; title={final_title}")
             item = {
                 **base_item,
                 "title": final_title,
-                "description": final_title,
+                # A school message must not be replaced with its short AI title.
+                "description": school_description or message_text,
+                "_description_from_school": True,
             }
 
             # Different URLs may be separate parts of the same lesson with the
