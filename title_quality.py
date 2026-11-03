@@ -195,3 +195,68 @@ def fit_title(value: Any, subject: Any = "", *, source_text: Any = "",
     if result[:1].islower():
         result = result[0].upper() + result[1:]
     return result
+
+
+def contextual_pdf_title(preview: Any, evidence: Any = "", subject: Any = "") -> str:
+    """Strong offline fallback for truncated EduSecure titles.
+
+    Never make up chapter numbers, exercises or deadlines. AI titles go through
+    the same source-evidence verification; this handles outages and old records.
+    """
+    raw = str(preview or "")
+    source = " ".join(str(x or "") for x in evidence) if isinstance(evidence, (list, tuple)) else str(evidence or "")
+    combined = (raw + " " + source).strip()
+    if not combined:
+        return "Study Material"
+
+    # The preview may stop at "Ch" before any actual chapter number exists.
+    # Never output the incomplete "Ch" or invent the missing number.
+    if re.search(r"\bNCERT\s+textbook\b", combined, flags=re.I) and re.search(
+        r"\bextra\s+practice\b", combined, flags=re.I
+    ):
+        chapter = re.search(r"\b(?:Ch(?:apter)?\.?)\s*(\d+(?:\.\d+)*)\b", combined, flags=re.I)
+        result = ("NCERT Textbook Chapter " + chapter.group(1) + " – Extra Practice"
+                  if chapter else "NCERT Textbook – Extra Practice")
+        return fit_title(result, subject, source_text=combined)
+
+    # Preserve distinct homework and test information when the source lists
+    # multiple exercises in one incomplete announcement preview.
+    first = re.search(
+        r"\bExercise\s*(\d+(?:\.\d+)*)\s*Q\s*(\d+)\b",
+        combined, flags=re.I,
+    )
+    second = re.search(
+        r"\bExercise\s*(\d+(?:\.\d+)*)\s*:\s*(?:Complete\s*)?Q\s*(\d+)\b",
+        combined, flags=re.I,
+    )
+    if first and second:
+        trailing = combined[second.end():]
+        trailing = re.split(r"\b(?:Test\s+of|Find\s+(?:the\s+)?attached)\b", trailing,
+                            maxsplit=1, flags=re.I)[0]
+        q_numbers = [int(second.group(2))]
+        q_numbers.extend(
+            int(m.group(1)) for m in re.finditer(
+                r"(?:[-–,]\s*)(\d+)(?=\s*(?:[-–,(]|$))", trailing,
+            )
+        )
+        q_numbers = list(dict.fromkeys(q_numbers))
+        q_range = ("Q" + str(q_numbers[0]) + "–" + str(q_numbers[-1])
+                   if len(q_numbers) > 1 and q_numbers == list(range(q_numbers[0], q_numbers[-1] + 1))
+                   else "Q" + second.group(2))
+        candidate = (
+            "Exercise " + first.group(1) + " Q" + first.group(2) +
+            "; Exercise " + second.group(1) + " " + q_range
+        )
+        test = re.search(r"\bTest\s+of\s+Chapter\s*(\d+(?:\.\d+)*)\b", combined, flags=re.I)
+        if test:
+            candidate += "; Chapter " + test.group(1) + " Test"
+        return fit_title(candidate, subject, source_text=combined)
+
+    # Never let an unfinished chapter reference appear as a complete title.
+    seed = polish_title(raw or source, subject)
+    if re.search(r"\b(?:Ch(?:apter)?\.?)\s*$", seed, flags=re.I):
+        seed = re.sub(r"\s*\b(?:Ch(?:apter)?\.?)\s*$", "", seed, flags=re.I).strip()
+    candidate = fit_title(seed or source, subject, source_text=combined)
+    if not candidate or re.search(r"\b(?:Ch(?:apter)?\.?)\s*$", candidate, flags=re.I):
+        return "Study Material"
+    return candidate

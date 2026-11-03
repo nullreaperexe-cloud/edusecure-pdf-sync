@@ -13,6 +13,7 @@ from urllib.parse import urlsplit
 
 import supabase_gateway as gateway
 import title_quality as quality
+import school_text
 from reliable_http import canonical_url
 import personal_notice_filter as privacy
 
@@ -51,7 +52,11 @@ def build_material(item: Dict[str, Any], source_date: date, order: int) -> Dict[
         "id": document_id,
         "title": title,
         "subject": intelligence.normalize_subject(safe.get("subject")) or "Circular",
-        "description": str(safe.get("description") or title).strip(),
+        "description": (
+            school_text.clean_school_description(item.get("description"))
+            if item.get("_description_from_school")
+            else str(safe.get("description") or title).strip()
+        ) or title,
         "pdf_url": pdf_url,
         "source_date": source_timestamp,
         "order": int(order),
