@@ -94,7 +94,7 @@ class NonBrokenEduSecureTests(unittest.TestCase):
         self.assertEqual(
             result["description"],
             "Exercise 6.1 Q10 - Exercise 6.2:Complete Q1 - 2 - 3 - "
-            "4(a - b - c) - 5(a - b). Test of Chapter 5 on.",
+            "4(a - b - c) - 5(a - b). Test of Chapter 5.",
         )
         self.assertNotEqual(result["title"], result["description"])
         self.assertEqual(result["pdf_url"], item["url"])
