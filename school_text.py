@@ -58,6 +58,11 @@ def clean_school_description(value: Any) -> str:
         result = result[:control.start()]
     result = _CHROME_TRAIL.sub("", result)
     for pattern in _DATE_PATTERNS:
+        # The preposition belongs to the date phrase, not to the instruction.
+        result = re.sub(
+            r"\b(?:on|dated)\s+(?=" + pattern + r")", "",
+            result, flags=re.IGNORECASE,
+        )
         result = re.sub(pattern, "", result, flags=re.IGNORECASE)
     # Remove leftover 'Date:' headings, but not lessons about historical dates.
     result = re.sub(r"(?i)(?<!\w)\b(?:date|dated)\s*[:\-]\s*(?=[,.;\s]|$)", "", result)
