@@ -16,7 +16,8 @@ import supabase_gateway as gateway
 def ai_candidate_needed(title: str, locally_cleaned: str) -> bool:
     return bool(
         len(locally_cleaned.split()) > 11 or len(title) > quality.MAX_TITLE_LENGTH
-        or bool(re.search(r"(?:&|\.{3}|…|\bfind|\band|\bof|\bto)\s*$", title, flags=re.I))
+        or bool(re.search(r"(?:&|\.{3}|…|\bfind|\band|\bof|\bto|\bch\.?|\bq)\s*$", title, flags=re.I))
+        or title.count("(") != title.count(")")
         or re.search(r"\b(?:find attached|attached (?:pdf|file)|kindly|please|dear students|"
                      r"complete it|were done|bring your|tomorrow|reminder:)\b", title, flags=re.I)
         or locally_cleaned in {"Study Material", "School Notice"}
@@ -26,7 +27,7 @@ def choose_title(record: dict, allow_ai: bool) -> tuple[str, bool]:
     original = str(record.get("title") or "").strip()
     subject = intelligence.normalize_subject(record.get("subject"))
     detail = str(record.get("description") or "")
-    local = quality.fit_title(original, subject, source_text=detail, fallback=original)
+    local = quality.contextual_pdf_title(original, [original, detail], subject)
     if not local or local in {"Study Material", "School Notice"}:
         return original, False
     used_ai = False
@@ -40,7 +41,12 @@ def choose_title(record: dict, allow_ai: bool) -> tuple[str, bool]:
         if desc and desc != original:
             evidence.append(desc)
         proposed = groq_title.generate_title(evidence, subject, fallback_title=local)
-        if proposed and quality.supported_by_evidence(proposed, evidence):
+        # An AI rewrite cannot discard exercise/chapter identifiers recovered
+        # from the teacher's source message by the deterministic title builder.
+        required_ids = set(re.findall(r"\b\d+(?:\.\d+)*\b", local))
+        proposed_ids = set(re.findall(r"\b\d+(?:\.\d+)*\b", proposed or ""))
+        if (proposed and required_ids.issubset(proposed_ids)
+                and quality.supported_by_evidence(proposed, evidence)):
             result = proposed
             used_ai = True
     if result != original and not quality.supported_by_evidence(result, [original, record.get("description") or ""]):
@@ -69,7 +75,12 @@ def main() -> int:
         if not title_before:
             continue
         checked += 1
-        local = quality.fit_title(title_before, row.get("subject"), source_text=row.get("description") or "", fallback=title_before)
+        if "title" in (row.get("admin_edited_fields") or []):
+            skipped += 1
+            continue
+        local = quality.contextual_pdf_title(
+            title_before, [title_before, row.get("description") or ""], row.get("subject"),
+        )
         need_ai = ai_candidate_needed(title_before, local)
         allow_ai = bool(need_ai and ai_calls < limit and groq_title.GROQ_API_KEY)
         if allow_ai:
