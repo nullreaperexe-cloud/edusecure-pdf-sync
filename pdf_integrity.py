@@ -34,46 +34,58 @@ def significant_words(value: Any) -> set[str]:
 
 
 def fetch_pdf_text(pdf_url: str) -> Tuple[str, str]:
-    """Return (extracted text, status). Unavailable PDFs are never guessed."""
-    try:
-        response = requests.get(
-            pdf_url,
-            timeout=(7, 18),
-            headers={"User-Agent": "8aPDF-content-verifier/1.0"},
-            stream=True,
-        )
+    """Bounded 12 MiB / three-page PDF extraction; retry transient read failures.
+
+    Never use teacher message text as a replacement for unreadable PDF text.
+    """
+    import time
+    from pypdf.errors import PdfReadError
+
+    for attempt in range(2):
         try:
-            response.raise_for_status()
-            size = int(response.headers.get("Content-Length") or 0)
-            if size > MAX_PDF_BYTES:
-                return "", "too-large"
-            chunks = []
-            total = 0
-            for part in response.iter_content(chunk_size=65536):
-                if not part:
-                    continue
-                total += len(part)
-                if total > MAX_PDF_BYTES:
-                    return "", "too-large"
-                chunks.append(part)
-            data = b"".join(chunks)
-        finally:
-            # Streaming responses retain sockets, especially on size-limit exits.
-            response.close()
-        if not data.startswith(b"%PDF"):
-            return "", "not-a-pdf"
-        pdf = PdfReader(io.BytesIO(data), strict=False)
-        texts = []
-        for page in pdf.pages[:3]:
+            response = requests.get(
+                pdf_url, timeout=(7, 18), stream=True,
+                headers={"User-Agent": "8aPDF-content-reader/2.0"},
+            )
             try:
-                texts.append(page.extract_text() or "")
-            except Exception:
+                response.raise_for_status()
+                size = int(response.headers.get("Content-Length") or 0)
+                if size > MAX_PDF_BYTES:
+                    return "", "too-large"
+                chunks, total = [], 0
+                for part in response.iter_content(chunk_size=65536):
+                    if not part:
+                        continue
+                    total += len(part)
+                    if total > MAX_PDF_BYTES:
+                        return "", "too-large"
+                    chunks.append(part)
+                data = b"".join(chunks)
+            finally:
+                response.close()
+            if not data.startswith(b"%PDF"):
+                return "", "not-a-pdf"
+            try:
+                pdf = PdfReader(io.BytesIO(data), strict=False)
+                texts = []
+                for page in pdf.pages[:3]:
+                    try:
+                        texts.append(page.extract_text() or "")
+                    except Exception:
+                        continue
+                text = "\\n".join(texts)[:14000].strip()
+            except (PdfReadError, ValueError, OSError):
+                return "", "corrupt"
+            return text, ("readable" if len(compact(text)) >= 45 else "image-only")
+        except requests.RequestException as exc:
+            print(f"PDF download attempt {attempt+1}/2 failed ({type(exc).__name__})")
+            if attempt == 0:
+                time.sleep(0.25)
                 continue
-        text = "\n".join(texts)[:14000].strip()
-        return text, ("readable" if len(compact(text)) >= 45 else "image-only")
-    except Exception as exc:
-        print(f"PDF text verification unavailable ({type(exc).__name__}); using message evidence")
-        return "", "unavailable"
+        except (ValueError, OSError) as exc:
+            print(f"PDF reader failed ({type(exc).__name__})")
+            return "", "corrupt"
+    return "", "unavailable"
 
 
 def evidence_title(pdf_text: str, message_text: str) -> str:
